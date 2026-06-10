@@ -31,15 +31,13 @@ Usage:
   claude-profile --sync-settings <profile>
   claude-profile --remove <profile>
   claude-profile --trash-list
-  claude-profile --install-shell
   claude-profile --list
   claude-profile --doctor
   claude-profile --help
 
 Examples:
   claude-profile personal-one
-  claude-profile work -- --version
-  claude-profile work --dangerously-skip-permissions
+  claude-profile work
 
 Profiles live under ~/.claude-profiles by default. Each profile gets its own
 CLAUDE_CONFIG_DIR, credentials, sessions, history, cache, telemetry, and project
@@ -81,19 +79,6 @@ validate_profile() {
 profile_path() {
   local profile="$1"
   printf '%s/%s\n' "$profiles_root" "$profile"
-}
-
-resolve_script_path() {
-  local src="${BASH_SOURCE[0]}"
-  local dir
-
-  while [[ -L "$src" ]]; do
-    dir="$(cd -P "$(dirname "$src")" && pwd)"
-    src="$(readlink "$src")"
-    [[ "$src" == /* ]] || src="$dir/$src"
-  done
-
-  cd -P "$(dirname "$src")" && pwd
 }
 
 find_claude_bin() {
@@ -249,43 +234,6 @@ list_trash() {
     | LC_ALL=C sort
 }
 
-install_shell_integration() {
-  local shell_file="${CLAUDE_PROFILE_SHELL_FILE:-$HOME/.zshrc}"
-  local script_dir package_root shell_source
-  local begin_marker="# >>> claude-profile >>>"
-  local end_marker="# <<< claude-profile <<<"
-
-  script_dir="$(resolve_script_path)"
-  package_root="$(cd "$script_dir/.." && pwd)"
-  shell_source="$package_root/shell/zsh.zsh"
-
-  if [[ ! -f "$shell_source" ]]; then
-    err "shell integration file not found: $shell_source"
-    return 1
-  fi
-
-  touch "$shell_file"
-
-  local tmp_file
-  tmp_file="$(mktemp "${TMPDIR:-/tmp}/claude-profile-zshrc.XXXXXX")"
-  awk -v begin="$begin_marker" -v end="$end_marker" '
-    $0 == begin { skip = 1; next }
-    $0 == end { skip = 0; next }
-    skip != 1 { print }
-  ' "$shell_file" > "$tmp_file"
-
-  {
-    cat "$tmp_file"
-    printf '\n%s\n' "$begin_marker"
-    printf 'source "%s"\n' "$shell_source"
-    printf '%s\n' "$end_marker"
-  } > "$shell_file"
-
-  rm -f "$tmp_file"
-  printf 'Installed shell integration in %s\n' "$shell_file"
-  printf 'Restart your shell or run: source %s\n' "$shell_file"
-}
-
 strip_auth_env() {
   local name
   for name in "${auth_env_names[@]}"; do
@@ -395,10 +343,6 @@ main() {
       list_trash
       return 0
       ;;
-    --install-shell|install-shell)
-      install_shell_integration
-      return 0
-      ;;
     --doctor|doctor)
       doctor
       return 0
@@ -458,6 +402,8 @@ main() {
   if should_inject_name "$@"; then
     set -- --name "$profile" "$@"
   fi
+
+  set -- "$@" --dangerously-skip-permissions
 
   exec "$claude_bin" "$@"
 }

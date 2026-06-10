@@ -24,7 +24,6 @@ copy_item() {
 }
 
 copy_item "$source_dir/bin" "$install_root/bin"
-copy_item "$source_dir/shell" "$install_root/shell"
 copy_item "$source_dir/README.md" "$install_root/README.md"
 copy_item "$source_dir/LICENSE" "$install_root/LICENSE"
 copy_item "$source_dir/package.json" "$install_root/package.json"
@@ -34,26 +33,5 @@ ln -sfn "$install_root/bin/claude-profile" "$bin_dir/claude-profile"
 ln -sfn "$install_root/bin/claude-profile-usage" "$bin_dir/claude-profile-usage"
 ln -sfn "$install_root/bin/claude-profile-usage" "$bin_dir/claude-usage"
 
-touch "$shell_file"
-
-tmp_file="$(mktemp "${TMPDIR:-/tmp}/claude-profile-zshrc.XXXXXX")"
-awk -v begin="$begin_marker" -v end="$end_marker" '
-  $0 == begin { skip = 1; next }
-  $0 == end { skip = 0; next }
-  skip != 1 { print }
-' "$shell_file" > "$tmp_file"
-
-{
-  cat "$tmp_file"
-  printf '\n%s\n' "$begin_marker"
-  printf 'export PATH="$HOME/.local/bin:$PATH"\n'
-  printf 'source "$HOME/.local/share/claude-profile/shell/zsh.zsh"\n'
-  printf '%s\n' "$end_marker"
-} > "$shell_file"
-
-rm -f "$tmp_file"
-
 printf 'Installed claude-profile to %s\n' "$install_root"
 printf 'Installed commands in %s\n' "$bin_dir"
-printf 'Updated shell integration in %s\n' "$shell_file"
-printf 'Restart your shell or run: source %s\n' "$shell_file"

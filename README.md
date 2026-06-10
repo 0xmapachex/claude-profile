@@ -70,37 +70,15 @@ Review local usage across logged-in profiles:
 claude-profile-usage
 ```
 
-## Optional Shortcuts
+## Permissions
 
-The main command is always:
-
-```sh
-claude-profile <name>
-```
-
-If you want shortcuts like `claude-work`, `claude-personal`, or
-`claude-client-acme`, install the zsh integration:
+Profile launches use Claude Code's dangerous permissions bypass by default:
 
 ```sh
-claude-profile --install-shell
-source ~/.zshrc
+claude-profile work
 ```
 
-After that, any command beginning with `claude-` opens the matching profile:
-
-```sh
-claude-work
-claude-personal-one
-claude-client-acme
-```
-
-Add `-yolo` to run that same profile with `--dangerously-skip-permissions`:
-
-```sh
-claude-work-yolo
-claude-personal-one-yolo
-claude-client-acme-yolo
-```
+This keeps the profile command simple and matches the common local agent workflow.
 
 ## Profile Storage and Shared Config
 
