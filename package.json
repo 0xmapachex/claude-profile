@@ -1,6 +1,6 @@
 {
   "name": "@0xmapache/claude-profile",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Secure local multi-profile launcher for Claude Code.",
   "license": "MIT",
   "repository": {

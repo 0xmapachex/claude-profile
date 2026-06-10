@@ -94,10 +94,12 @@ claude-personal-one
 claude-client-acme
 ```
 
-For dangerous mode:
+Add `-yolo` to run that same profile with `--dangerously-skip-permissions`:
 
 ```sh
-claude-profile-yolo work
+claude-work-yolo
+claude-personal-one-yolo
+claude-client-acme-yolo
 ```
 
 ## Profile Storage and Shared Config

@@ -36,6 +36,18 @@ command_not_found_handler() {
     esac
 
     shift
+
+    if [[ "$profile" == *-yolo ]]; then
+      profile="${profile%-yolo}"
+
+      if [[ -z "$profile" ]]; then
+        return 127
+      fi
+
+      claude-profile-yolo "$profile" "$@"
+      return $?
+    fi
+
     claude-profile "$profile" "$@"
     return $?
   fi
