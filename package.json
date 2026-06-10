@@ -1,0 +1,37 @@
+{
+  "name": "@0xmapache/claude-profile",
+  "version": "0.1.0",
+  "description": "Secure local multi-profile launcher for Claude Code.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xmapachex/claude-profile.git"
+  },
+  "homepage": "https://github.com/0xmapachex/claude-profile#readme",
+  "bugs": {
+    "url": "https://github.com/0xmapachex/claude-profile/issues"
+  },
+  "bin": {
+    "claude-profile": "bin/claude-profile",
+    "claude-profile-usage": "bin/claude-profile-usage"
+  },
+  "files": [
+    "bin/",
+    "shell/",
+    "install.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "profiles",
+    "multi-account"
+  ],
+  "scripts": {
+    "test": "bash -n bin/claude-profile bin/claude-profile-usage"
+  }
+}

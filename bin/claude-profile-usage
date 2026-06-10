@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+profiles_root="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
+ccusage_package="${CLAUDE_PROFILE_CCUSAGE_PACKAGE:-ccusage@latest}"
+
+usage() {
+  cat <<'EOF'
+claude-profile-usage - local Claude Code usage by logged-in claude-profile profiles
+
+Usage:
+  claude-profile-usage [period] [ccusage args...]
+
+Periods:
+  daily      Summarize daily local usage totals per profile (default)
+  weekly     Summarize weekly local usage totals per profile
+  monthly    Summarize monthly local usage totals per profile
+
+Examples:
+  claude-profile-usage
+  claude-profile-usage monthly
+  claude-profile-usage daily --since 2026-06-01
+
+Notes:
+  - This reports local Claude Code usage logs, not live subscription quota.
+  - Only profiles where `claude auth status --json` reports loggedIn=true are included.
+  - It does not read or print OAuth tokens.
+EOF
+}
+
+err() {
+  printf 'claude-profile-usage: %s\n' "$*" >&2
+}
+
+find_claude_bin() {
+  if [[ -n "${CLAUDE_PROFILE_CLAUDE_BIN:-}" ]]; then
+    printf '%s\n' "$CLAUDE_PROFILE_CLAUDE_BIN"
+    return 0
+  fi
+
+  command -v claude
+}
+
+find_profiles() {
+  if [[ ! -d "$profiles_root" ]]; then
+    return 0
+  fi
+
+  find "$profiles_root" -mindepth 1 -maxdepth 1 -type d -print \
+    | awk -F/ '{ if ($NF !~ /^\./) print }' \
+    | LC_ALL=C sort
+}
+
+profile_name_from_path() {
+  local path="$1"
+  basename "$path"
+}
+
+profile_logged_in() {
+  local profile_dir="$1"
+  local claude_bin="$2"
+  local status_json
+
+  if ! status_json="$(CLAUDE_CONFIG_DIR="$profile_dir" "$claude_bin" auth status --json 2>/dev/null)"; then
+    return 1
+  fi
+
+  node -e '
+let raw = "";
+process.stdin.on("data", d => raw += d);
+process.stdin.on("end", () => {
+  try {
+    const status = JSON.parse(raw);
+    process.exit(status.loggedIn === true ? 0 : 1);
+  } catch {
+    process.exit(1);
+  }
+});
+' <<<"$status_json"
+}
+
+run_ccusage_json() {
+  local profile_dir="$1"
+  local period="$2"
+  shift 2
+
+  if command -v ccusage >/dev/null 2>&1; then
+    CLAUDE_CONFIG_DIR="$profile_dir" ccusage claude "$period" --json --offline "$@"
+  elif command -v npx >/dev/null 2>&1; then
+    CLAUDE_CONFIG_DIR="$profile_dir" npx -y "$ccusage_package" claude "$period" --json --offline "$@"
+  else
+    err "ccusage or npx is required for usage reports"
+    return 127
+  fi
+}
+
+json_string_array() {
+  node -e 'console.log(JSON.stringify(process.argv.slice(1)))' "$@"
+}
+
+main() {
+  local period="${1:-daily}"
+
+  case "$period" in
+    -h|--help|help)
+      usage
+      return 0
+      ;;
+    daily|weekly|monthly)
+      shift || true
+      ;;
+    *)
+      err "invalid period: $period"
+      usage >&2
+      return 2
+      ;;
+  esac
+
+  local claude_bin
+  claude_bin="$(find_claude_bin)" || {
+    err "claude binary not found in PATH"
+    return 127
+  }
+
+  local rows_file
+  rows_file="$(mktemp "${TMPDIR:-/tmp}/claude-usage-rows.XXXXXX")"
+  trap "rm -f '$rows_file'" EXIT
+  printf '[]' > "$rows_file"
+
+  local profile_dir profile status ccusage_json args_json
+  args_json="$(json_string_array "$@")"
+
+  while IFS= read -r profile_dir; do
+    [[ -n "$profile_dir" ]] || continue
+    profile="$(profile_name_from_path "$profile_dir")"
+
+    if ! profile_logged_in "$profile_dir" "$claude_bin"; then
+      continue
+    fi
+
+    if ccusage_json="$(run_ccusage_json "$profile_dir" "$period" "$@" 2>/dev/null)"; then
+      status="ok"
+    else
+      status="usage-unavailable"
+      ccusage_json='{}'
+    fi
+
+    CCUSAGE_JSON="$ccusage_json" node - "$rows_file" "$profile" "$profile_dir" "$period" "$status" "$args_json" <<'NODE'
+const fs = require("fs");
+
+const [rowsPath, profile, profileDir, period, status, argsJson] = process.argv.slice(2);
+const args = JSON.parse(argsJson);
+let ccusage = {};
+const raw = process.env.CCUSAGE_JSON ?? "";
+
+if (raw.trim()) {
+  try {
+    ccusage = JSON.parse(raw);
+  } catch {
+    ccusage = {};
+  }
+}
+
+const totals = ccusage.totals ?? {};
+const list = ccusage[period] ?? [];
+const latest = Array.isArray(list) && list.length > 0 ? list[list.length - 1] : null;
+
+const row = {
+  profile,
+  profileDir,
+  status,
+  periods: Array.isArray(list) ? list.length : 0,
+  totalTokens: Number(totals.totalTokens ?? 0),
+  inputTokens: Number(totals.inputTokens ?? 0),
+  outputTokens: Number(totals.outputTokens ?? 0),
+  cacheCreationTokens: Number(totals.cacheCreationTokens ?? 0),
+  cacheReadTokens: Number(totals.cacheReadTokens ?? 0),
+  totalCost: Number(totals.totalCost ?? 0),
+  latestPeriod: latest?.date ?? latest?.period ?? "",
+  latestTokens: Number(latest?.totalTokens ?? 0),
+  args
+};
+
+const rows = JSON.parse(fs.readFileSync(rowsPath, "utf8"));
+rows.push(row);
+fs.writeFileSync(rowsPath, JSON.stringify(rows));
+NODE
+  done < <(find_profiles)
+
+  node - "$rows_file" "$period" <<'NODE'
+const fs = require("fs");
+
+const [rowsPath, period] = process.argv.slice(2);
+const rows = JSON.parse(fs.readFileSync(rowsPath, "utf8"));
+
+function fmtInt(value) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function fmtMoney(value) {
+  return `$${new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(value)}`;
+}
+
+if (rows.length === 0) {
+  console.log("No logged-in claude-profile profiles found.");
+  console.log("Run `claude-profile <name>` and use /login inside Claude first.");
+  process.exit(0);
+}
+
+const table = rows.map(row => ({
+  Profile: row.profile,
+  Status: row.status,
+  [`${period} periods`]: row.periods,
+  "Total tokens": fmtInt(row.totalTokens),
+  "Input": fmtInt(row.inputTokens),
+  "Output": fmtInt(row.outputTokens),
+  "Cache write": fmtInt(row.cacheCreationTokens),
+  "Cache read": fmtInt(row.cacheReadTokens),
+  "Est. cost": fmtMoney(row.totalCost),
+  "Latest": row.latestPeriod || "-"
+}));
+
+console.table(table);
+console.log("Source: local Claude Code logs via ccusage. This is not live subscription quota.");
+NODE
+}
+
+main "$@"
