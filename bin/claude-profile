@@ -47,7 +47,9 @@ Profiles live under ~/.claude-profiles by default. Each profile gets its own
 CLAUDE_CONFIG_DIR, credentials, sessions, history, cache, telemetry, and project
 state. Stable customization is bootstrapped from ~/.claude:
 
-  - settings.json is copied once and stripped of auth-bearing keys.
+  - settings.json is re-synced from ~/.claude on every launch and stripped of
+    auth-bearing keys. Set CLAUDE_PROFILE_SYNC_SETTINGS=0 to keep profile-local
+    edits instead.
   - skills, agents, commands, output-styles, and CLAUDE.md are symlinked if they exist.
 
 Each profile is assigned a random session color, applied to the session name
@@ -385,6 +387,12 @@ doctor() {
   printf 'shared items: %s\n' "$shared_items"
   printf 'shortcuts dir: %s\n' "$shortcuts_dir"
 
+  if [[ "${CLAUDE_PROFILE_SYNC_SETTINGS:-1}" != "0" ]]; then
+    printf 'settings sync at launch: enabled\n'
+  else
+    printf 'settings sync at launch: disabled (CLAUDE_PROFILE_SYNC_SETTINGS=0)\n'
+  fi
+
   local claude_bin
   if claude_bin="$(find_claude_bin 2>/dev/null)"; then
     printf 'claude binary: %s\n' "$claude_bin"
@@ -478,6 +486,10 @@ main() {
 
   local profile_dir
   profile_dir="$(init_profile "$profile")" || return $?
+
+  if [[ "${CLAUDE_PROFILE_SYNC_SETTINGS:-1}" != "0" ]]; then
+    write_sanitized_settings "$source_config/settings.json" "$profile_dir/settings.json"
+  fi
 
   local claude_bin
   claude_bin="$(find_claude_bin)" || {

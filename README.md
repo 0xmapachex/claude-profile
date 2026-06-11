@@ -104,16 +104,26 @@ Each profile has isolated:
 - telemetry
 - project state
 
-On first launch, the profile is bootstrapped from your main `~/.claude` config:
+Profiles are bootstrapped from your main `~/.claude` config:
 
-- `settings.json` is copied once.
+- `settings.json` is re-synced from `~/.claude/settings.json` on every launch,
+  so profiles always follow your main configuration. Auth-bearing keys are
+  stripped during the sync.
 - `skills`, `agents`, `commands`, `output-styles`, and `CLAUDE.md` are symlinked
   if they exist.
 
-This means shared skills update everywhere, while account-specific state stays
-separate.
+This means shared skills and settings update everywhere, while account-specific
+state stays separate. Plugins enabled in `settings.json` are reinstalled
+automatically by Claude Code inside each profile.
 
-If you later change your main `~/.claude/settings.json`, sync a profile:
+If you want a profile to keep its own local `settings.json` edits instead of
+following `~/.claude`, disable the launch sync:
+
+```sh
+CLAUDE_PROFILE_SYNC_SETTINGS=0 claude-profile work
+```
+
+To sync a profile's settings without launching it:
 
 ```sh
 claude-profile --sync-settings work
