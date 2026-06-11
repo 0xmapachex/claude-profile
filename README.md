@@ -38,6 +38,13 @@ Open the same profile later:
 claude-profile personal
 ```
 
+After the first launch, a shortcut named `claude-<profile>` is created in
+`~/.local/bin`, so you can also reopen it with:
+
+```sh
+claude-personal
+```
+
 Create another profile:
 
 ```sh
@@ -151,4 +158,50 @@ Customize or disable this behavior:
 CLAUDE_PROFILE_TITLE_PREFIX="cc:" claude-profile work
 CLAUDE_PROFILE_SET_TERMINAL_TITLE=0 claude-profile work
 CLAUDE_PROFILE_SET_CLAUDE_NAME=0 claude-profile work
+```
+
+## Profile Colors
+
+Each profile is assigned a random session color the first time it is
+initialized, avoiding colors already used by other profiles. On a bare launch
+(no extra claude arguments), the wrapper applies it by running claude's
+`/color` command at startup, so the session name badge inside Claude Code is
+visually distinct per account.
+
+Color injection is skipped when you pass any arguments: they may carry a
+prompt of their own, and resumed sessions (`-r`, `-c`) restore their previous
+color automatically. It is also skipped when the installed claude version
+does not support `/color`, so launches degrade gracefully (no color,
+everything else works).
+
+The color is stored in `~/.claude-profiles/<profile>/profile-color`. Pick one
+by hand by writing any of the supported values into that file:
+
+```text
+red blue green yellow purple orange pink cyan
+```
+
+Disable color injection with:
+
+```sh
+CLAUDE_PROFILE_SET_CLAUDE_COLOR=0 claude-profile work
+```
+
+## Launch Shortcuts
+
+Each profile launch also creates `~/.local/bin/claude-<profile>`, so the
+second time around you can start a profile directly:
+
+```sh
+claude-work
+claude-personal
+```
+
+Shortcuts are small generated scripts; removing a profile removes its
+shortcut, and existing commands not created by claude-profile are never
+overwritten. Customize or disable:
+
+```sh
+CLAUDE_PROFILE_SHORTCUT_DIR="$HOME/bin" claude-profile work
+CLAUDE_PROFILE_SHORTCUTS=0 claude-profile work
 ```

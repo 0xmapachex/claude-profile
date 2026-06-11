@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 profiles_root="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
 source_config="${CLAUDE_PROFILE_SOURCE_CONFIG:-$HOME/.claude}"
 shared_items_default="skills agents commands output-styles CLAUDE.md"
 shared_items="${CLAUDE_PROFILE_SHARED_ITEMS:-$shared_items_default}"
+shortcuts_dir="${CLAUDE_PROFILE_SHORTCUT_DIR:-$HOME/.local/bin}"
+
+# session colors accepted by claude's /color command
+profile_color_palette=(red blue green yellow purple orange pink cyan)
 
 auth_env_names=(
   ANTHROPIC_API_KEY
@@ -45,6 +49,12 @@ state. Stable customization is bootstrapped from ~/.claude:
 
   - settings.json is copied once and stripped of auth-bearing keys.
   - skills, agents, commands, output-styles, and CLAUDE.md are symlinked if they exist.
+
+Each profile is assigned a random session color, applied to the session name
+badge inside Claude Code by running /color at startup on bare launches, and a
+launch shortcut named claude-<profile> in ~/.local/bin, so after the first
+run you can start a profile with e.g. `claude-work`. Disable with
+CLAUDE_PROFILE_SET_CLAUDE_COLOR=0 / CLAUDE_PROFILE_SHORTCUTS=0.
 
 For account separation, auth/provider environment variables are always removed
 before Claude starts, so ANTHROPIC_API_KEY and similar variables cannot override
@@ -151,6 +161,86 @@ sync_settings() {
   printf '%s/settings.json\n' "$profile_dir"
 }
 
+ensure_profile_color() {
+  local profile_dir="$1"
+  local color_file="$profile_dir/profile-color"
+  local c
+
+  if [[ -s "$color_file" ]]; then
+    local existing
+    existing="$(cat "$color_file")"
+    for c in "${profile_color_palette[@]}"; do
+      if [[ "$existing" == "$c" ]]; then
+        printf '%s\n' "$existing"
+        return 0
+      fi
+    done
+  fi
+
+  local used="" f
+  for f in "$profiles_root"/*/profile-color; do
+    [[ -f "$f" ]] && used+=" $(cat "$f")"
+  done
+
+  local available=()
+  for c in "${profile_color_palette[@]}"; do
+    [[ " $used " == *" $c "* ]] || available+=("$c")
+  done
+  (( ${#available[@]} )) || available=("${profile_color_palette[@]}")
+
+  local color="${available[RANDOM % ${#available[@]}]}"
+  printf '%s\n' "$color" > "$color_file"
+  printf '%s\n' "$color"
+}
+
+supports_session_color() {
+  # the /color command ships in claude builds containing its confirmation string
+  grep -aqs -- 'Session color set to' "$1"
+}
+
+shortcut_path() {
+  printf '%s/claude-%s\n' "$shortcuts_dir" "$1"
+}
+
+write_shortcut() {
+  local profile="$1"
+
+  if [[ "${CLAUDE_PROFILE_SHORTCUTS:-1}" == "0" ]]; then
+    return 0
+  fi
+
+  case "claude-$profile" in
+    claude-profile|claude-profile-usage|claude-usage)
+      return 0
+      ;;
+  esac
+
+  local shim
+  shim="$(shortcut_path "$profile")"
+
+  if [[ -e "$shim" ]] && ! grep -q 'claude-profile shortcut' "$shim" 2>/dev/null; then
+    err "not overwriting existing command: $shim"
+    return 0
+  fi
+
+  mkdir -p "$shortcuts_dir"
+  cat > "$shim" <<EOF
+#!/usr/bin/env bash
+# claude-profile shortcut: $profile (auto-generated; safe to delete)
+exec claude-profile '$profile' "\$@"
+EOF
+  chmod 755 "$shim"
+}
+
+remove_shortcut() {
+  local shim
+  shim="$(shortcut_path "$1")"
+
+  if [[ -f "$shim" ]] && grep -q 'claude-profile shortcut' "$shim" 2>/dev/null; then
+    rm -f "$shim"
+  fi
+}
+
 link_shared_item() {
   local profile_dir="$1"
   local name="$2"
@@ -183,6 +273,9 @@ init_profile() {
   for item in $shared_items; do
     link_shared_item "$profile_dir" "$item"
   done
+
+  ensure_profile_color "$profile_dir" >/dev/null
+  write_shortcut "$profile"
 
   printf '%s\n' "$profile_dir"
 }
@@ -218,6 +311,7 @@ remove_profile() {
   mkdir -p "$trash_dir"
   chmod 700 "$trash_dir" 2>/dev/null || true
   mv "$profile_dir" "$trash_path"
+  remove_shortcut "$profile"
 
   printf 'moved %s to %s\n' "$profile" "$trash_path"
 }
@@ -294,16 +388,40 @@ should_inject_name() {
   return 0
 }
 
+should_inject_color() {
+  local claude_bin="$1"
+  shift
+
+  if [[ "${CLAUDE_PROFILE_SET_CLAUDE_COLOR:-1}" == "0" ]]; then
+    return 1
+  fi
+
+  # the color is applied by passing "/color <color>" as the startup prompt, so
+  # only a bare launch is safe: user args may carry their own prompt, and
+  # resumed sessions (-r/-c) restore their color from the transcript anyway
+  if (( $# > 0 )); then
+    return 1
+  fi
+
+  supports_session_color "$claude_bin"
+}
+
 doctor() {
   printf 'claude-profile %s\n' "$VERSION"
   printf 'profiles root: %s\n' "$profiles_root"
   printf 'source config: %s\n' "$source_config"
   printf 'shared items: %s\n' "$shared_items"
+  printf 'shortcuts dir: %s\n' "$shortcuts_dir"
 
   local claude_bin
   if claude_bin="$(find_claude_bin 2>/dev/null)"; then
     printf 'claude binary: %s\n' "$claude_bin"
     "$claude_bin" --version 2>/dev/null | sed 's/^/claude version: /' || true
+    if supports_session_color "$claude_bin"; then
+      printf 'session color: supported\n'
+    else
+      printf 'session color: not supported (colors disabled)\n'
+    fi
   else
     printf 'claude binary: not found\n'
   fi
@@ -398,6 +516,10 @@ main() {
   strip_auth_env
   export CLAUDE_CONFIG_DIR="$profile_dir"
   set_terminal_title "$profile"
+
+  if should_inject_color "$claude_bin" "$@"; then
+    set -- "/color $(ensure_profile_color "$profile_dir")" "$@"
+  fi
 
   if should_inject_name "$@"; then
     set -- --name "$profile" "$@"
