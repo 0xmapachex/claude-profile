@@ -166,6 +166,11 @@ ensure_profile_color() {
   local color_file="$profile_dir/profile-color"
   local c
 
+  if [[ -L "$color_file" ]]; then
+    err "refusing to use symlink: $color_file"
+    return 0
+  fi
+
   if [[ -s "$color_file" ]]; then
     local existing
     existing="$(cat "$color_file")"
@@ -217,6 +222,11 @@ write_shortcut() {
 
   local shim
   shim="$(shortcut_path "$profile")"
+
+  if [[ -L "$shim" ]]; then
+    err "refusing to write symlink: $shim"
+    return 0
+  fi
 
   if [[ -e "$shim" ]] && ! grep -q 'claude-profile shortcut' "$shim" 2>/dev/null; then
     err "not overwriting existing command: $shim"
