@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 profiles_root="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
 source_config="${CLAUDE_PROFILE_SOURCE_CONFIG:-$HOME/.claude}"
@@ -360,44 +360,6 @@ set_terminal_title() {
   fi
 }
 
-has_name_arg() {
-  local arg
-
-  for arg in "$@"; do
-    case "$arg" in
-      -n|--name|--name=*)
-        return 0
-        ;;
-    esac
-  done
-
-  return 1
-}
-
-should_inject_name() {
-  if [[ "${CLAUDE_PROFILE_SET_CLAUDE_NAME:-1}" == "0" ]]; then
-    return 1
-  fi
-
-  if has_name_arg "$@"; then
-    return 1
-  fi
-
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      -h|--help|-v|--version|-p|--print)
-        return 1
-        ;;
-      auth|doctor|install|mcp|plugin|plugins|project|setup-token|update|upgrade)
-        return 1
-        ;;
-    esac
-  done
-
-  return 0
-}
-
 should_inject_color() {
   local claude_bin="$1"
   shift
@@ -529,10 +491,6 @@ main() {
 
   if should_inject_color "$claude_bin" "$@"; then
     set -- "/color $(ensure_profile_color "$profile_dir")" "$@"
-  fi
-
-  if should_inject_name "$@"; then
-    set -- --name "$profile" "$@"
   fi
 
   set -- "$@" --dangerously-skip-permissions
