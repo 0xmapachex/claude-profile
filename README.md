@@ -147,17 +147,19 @@ tokens or call undocumented live quota endpoints.
 
 ## Terminal Titles
 
-Interactive launches are labeled with the profile name:
+Interactive launches set the terminal title to the profile name (`claude:<profile>`),
+so you can tell which account a window belongs to.
 
-- terminal title: `claude:<profile>`
-- Claude session name: `<profile>`
+Each Claude session keeps Claude Code's own auto-generated name, derived from the
+conversation, so individual chats stay distinguishable and searchable in
+`claude --resume`. The wrapper no longer forces every session to share the
+profile name.
 
-Customize or disable this behavior:
+Customize or disable the terminal title:
 
 ```sh
 CLAUDE_PROFILE_TITLE_PREFIX="cc:" claude-profile work
 CLAUDE_PROFILE_SET_TERMINAL_TITLE=0 claude-profile work
-CLAUDE_PROFILE_SET_CLAUDE_NAME=0 claude-profile work
 ```
 
 ## Profile Colors
