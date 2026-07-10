@@ -466,6 +466,60 @@ heal_active_slot() {
   printf '%s\n' "$first"
 }
 
+meta_field() {
+  [[ -f "$1/meta.json" ]] || return 0
+  node -e '
+try {
+  const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const v = m[process.argv[2]];
+  if (typeof v === "string") process.stdout.write(v);
+} catch {}
+' "$1/meta.json" "$2" 2>/dev/null || true
+}
+
+backfill_email() {
+  local profile_dir="$1" sub="$2"
+  local slot storage status email
+  slot="$(slot_path "$profile_dir" "$sub")"
+  storage="$(slot_storage_dir "$profile_dir" "$sub")"
+  status="$(auth_status_json "$profile_dir" "$storage")" || return 0
+  [[ "$(printf '%s' "$status" | json_field loggedIn)" == "true" ]] || return 0
+  email="$(printf '%s' "$status" | json_field email)"
+  [[ -n "$email" ]] || return 0
+  write_slot_meta "$slot" "$sub" "$storage" "$email" >/dev/null 2>&1 || true
+  printf '%s\n' "$email"
+}
+
+list_subs_cmd() {
+  local profile="$1"
+  validate_profile "$profile" || return $?
+
+  local profile_dir
+  profile_dir="$(profile_path "$profile")"
+  if [[ ! -d "$profile_dir" ]]; then
+    err "profile does not exist: $profile"
+    return 2
+  fi
+
+  local active sub slot email marker any=0
+  active="$(resolve_active_slot "$profile_dir")"
+  while IFS= read -r sub; do
+    [[ -n "$sub" ]] || continue
+    any=1
+    slot="$(slot_path "$profile_dir" "$sub")"
+    email="$(meta_field "$slot" email)"
+    [[ -n "$email" ]] || email="$(backfill_email "$profile_dir" "$sub")"
+    marker=' '
+    [[ "$sub" == "$active" ]] && marker='*'
+    printf '%s %-20s %-30s %s\n' "$marker" "$sub" "${email:--}" "$(meta_field "$slot" lastUsedAt)"
+  done <<EOF
+$(list_slots "$profile_dir")
+EOF
+  if (( ! any )); then
+    printf 'no subscriptions; profile uses its own login (add with: claude-profile --add-sub %s <name>)\n' "$profile"
+  fi
+}
+
 add_sub() {
   local profile="$1" sub="$2"
   validate_profile "$profile" || return $?
@@ -756,6 +810,11 @@ main() {
         return 2
       fi
       switch_sub "$1" "${2:-}"
+      return $?
+      ;;
+    --subs|subs)
+      shift || true
+      list_subs_cmd "${1:-}"
       return $?
       ;;
     "")

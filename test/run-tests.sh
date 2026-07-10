@@ -162,5 +162,23 @@ check "heal: active repointed" file_contains "$pdir/.subscriptions/active" "alic
 check "heal: warned" file_contains "$TESTTMP/errout" "active subscription missing"
 check "heal: launch used healed slot" file_contains "$STUB_RECORD_FILE" "CLAUDE_SECURESTORAGE_CONFIG_DIR=$pdir/.subscriptions/alice"
 
+# --- subs listing ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+run_wrapper --add-sub personal alice
+run_wrapper --add-sub personal bob
+printf '{"loggedIn":true,"email":"alice@x.com"}\n' > "$pdir/.subscriptions/alice/stub-auth.json"
+
+run_wrapper --subs personal
+check "subs: exit 0" check_status 0
+check "subs: bob marked active" file_contains "$TESTTMP/out" "* bob"
+check "subs: alice email backfilled in output" file_contains "$TESTTMP/out" "alice@x.com"
+check "subs: alice email saved to meta" file_contains "$pdir/.subscriptions/alice/meta.json" '"email": "alice@x.com"'
+
+new_env
+run_wrapper --init personal
+run_wrapper --subs personal
+check "subs empty: helpful message" file_contains "$TESTTMP/out" "no subscriptions"
+
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit "$((fails > 0))"
