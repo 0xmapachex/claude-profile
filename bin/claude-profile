@@ -520,6 +520,73 @@ EOF
   fi
 }
 
+purge_keychain_entry() {
+  local storage_dir="$1"
+  local security_bin="${CLAUDE_PROFILE_SECURITY_BIN:-}"
+  if [[ -z "$security_bin" ]]; then
+    [[ "$(uname)" == "Darwin" ]] || return 0
+    security_bin="security"
+  fi
+  local service account
+  service="$(node -e '
+const crypto = require("crypto");
+const dir = process.argv[1].normalize("NFC");
+process.stdout.write("Claude Code-credentials-" + crypto.createHash("sha256").update(dir).digest("hex").substring(0, 8));
+' "$storage_dir")"
+  account="${USER:-claude-code-user}"
+  "$security_bin" delete-generic-password -a "$account" -s "$service" >/dev/null 2>&1
+}
+
+remove_sub() {
+  local profile="$1" sub="$2" purge="${3:-}"
+  validate_profile "$profile" || return $?
+  validate_sub_name "$sub" || return $?
+
+  local profile_dir slot
+  profile_dir="$(profile_path "$profile")"
+  slot="$(slot_path "$profile_dir" "$sub")"
+  if [[ ! -d "$slot" ]]; then
+    err "subscription does not exist: $sub"
+    return 2
+  fi
+
+  local storage
+  storage="$(slot_storage_dir "$profile_dir" "$sub")"
+  if [[ "$purge" == "--purge" ]]; then
+    if [[ "$storage" != "$slot" ]]; then
+      err "refusing --purge: subscription $sub uses the profile's own credential store"
+      return 2
+    fi
+    purge_keychain_entry "$storage" || err "warning: keychain purge failed (entry may not exist)"
+  elif [[ -n "$purge" ]]; then
+    err "unknown option: $purge"
+    return 2
+  fi
+
+  local timestamp trash_dir trash_path
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  trash_dir="$profiles_root/.trash"
+  umask 077
+  mkdir -p "$trash_dir"
+  chmod 700 "$trash_dir" 2>/dev/null || true
+  trash_path="$trash_dir/$profile-sub-$sub-$timestamp"
+  mv "$slot" "$trash_path"
+
+  if [[ -z "$(resolve_active_slot "$profile_dir")" ]]; then
+    local next
+    next="$(list_slots "$profile_dir" | head -n1)"
+    if [[ -n "$next" ]]; then
+      set_active_slot "$profile_dir" "$next"
+      journal_append "$profile_dir" switch "$next" "$sub"
+      printf 'active subscription now %s\n' "$next"
+    else
+      rm -f "$(subs_root "$profile_dir")/active"
+      printf 'no subscriptions remain; profile uses its own login\n'
+    fi
+  fi
+  printf 'moved subscription %s to %s\n' "$sub" "$trash_path"
+}
+
 add_sub() {
   local profile="$1" sub="$2"
   validate_profile "$profile" || return $?
@@ -815,6 +882,15 @@ main() {
     --subs|subs)
       shift || true
       list_subs_cmd "${1:-}"
+      return $?
+      ;;
+    --remove-sub|remove-sub)
+      shift || true
+      if [[ $# -lt 2 ]]; then
+        err "usage: claude-profile --remove-sub <profile> <name> [--purge]"
+        return 2
+      fi
+      remove_sub "$1" "$2" "${3:-}"
       return $?
       ;;
     "")

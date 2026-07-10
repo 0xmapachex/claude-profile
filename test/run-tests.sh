@@ -180,5 +180,63 @@ run_wrapper --init personal
 run_wrapper --subs personal
 check "subs empty: helpful message" file_contains "$TESTTMP/out" "no subscriptions"
 
+# --- remove-sub ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+run_wrapper --add-sub personal alice
+run_wrapper --add-sub personal bob    # active: bob
+
+run_wrapper --remove-sub personal alice
+check "remove inactive: exit 0" check_status 0
+check "remove inactive: slot gone" test ! -d "$pdir/.subscriptions/alice"
+check "remove inactive: in trash" bash -c "ls '$CLAUDE_PROFILES_ROOT/.trash' | grep -q '^personal-sub-alice-'"
+check "remove inactive: active untouched" file_contains "$pdir/.subscriptions/active" "bob"
+
+run_wrapper --remove-sub personal bob
+check "remove last: active cleared" test ! -e "$pdir/.subscriptions/active"
+check "remove last: message" file_contains "$TESTTMP/out" "no subscriptions remain"
+
+# active repoint when removing the active of two
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+run_wrapper --add-sub personal alice
+run_wrapper --add-sub personal bob    # active: bob
+run_wrapper --remove-sub personal bob
+check "remove active: repointed to alice" file_contains "$pdir/.subscriptions/active" "alice"
+check "remove active: journaled" file_contains "$pdir/.subscriptions/switch-log.jsonl" '"event":"switch","sub":"alice","from":"bob"'
+
+# purge uses security with hashed service name; refused for adopted slots
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+fake_security="$TESTTMP/fake-security"
+cat > "$fake_security" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_SECURITY_LOG:?}"
+EOF
+chmod 755 "$fake_security"
+export CLAUDE_PROFILE_SECURITY_BIN="$fake_security"
+export FAKE_SECURITY_LOG="$TESTTMP/security.log"
+
+run_wrapper --add-sub personal alice
+run_wrapper --add-sub personal bob
+expected_service="$(node -e '
+const crypto = require("crypto");
+const dir = process.argv[1].normalize("NFC");
+process.stdout.write("Claude Code-credentials-" + crypto.createHash("sha256").update(dir).digest("hex").substring(0, 8));
+' "$pdir/.subscriptions/alice")"
+run_wrapper --remove-sub personal alice --purge
+check "purge: security called with hashed service" file_contains "$FAKE_SECURITY_LOG" "$expected_service"
+
+new_env
+export CLAUDE_PROFILE_SECURITY_BIN="$fake_security"
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+mkdir -p "$pdir"
+printf '{"loggedIn":true,"email":"gus@x.com"}\n' > "$pdir/stub-auth.json"
+run_wrapper --add-sub personal bob   # adopts "gus" first
+run_wrapper --remove-sub personal gus --purge
+check "purge adopted: refused" check_status 2
+check "purge adopted: message" file_contains "$TESTTMP/errout" "refusing --purge"
+unset CLAUDE_PROFILE_SECURITY_BIN FAKE_SECURITY_LOG
+
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit "$((fails > 0))"
