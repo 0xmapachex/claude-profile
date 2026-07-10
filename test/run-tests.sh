@@ -263,5 +263,51 @@ run_wrapper --help
 check "help: --add-sub documented" file_contains "$TESTTMP/out" "add-sub"
 check "help: --switch documented" file_contains "$TESTTMP/out" "switch"
 
+# --- usage attribution ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+run_wrapper --add-sub personal alice
+
+mkdir -p "$pdir/projects/proj"
+cat > "$pdir/.subscriptions/switch-log.jsonl" <<'EOF'
+{"ts":"2026-07-01T00:00:00Z","event":"switch","sub":"alice","from":null}
+{"ts":"2026-07-02T00:00:00Z","event":"switch","sub":"bob","from":"alice"}
+EOF
+mkdir -p "$pdir/.subscriptions/bob"
+cat > "$pdir/projects/proj/session.jsonl" <<'EOF'
+{"type":"assistant","timestamp":"2026-06-30T12:00:00Z","requestId":"r0","message":{"id":"m0","usage":{"input_tokens":10,"output_tokens":1}}}
+{"type":"assistant","timestamp":"2026-07-01T12:00:00Z","requestId":"r1","message":{"id":"m1","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":5,"cache_read_input_tokens":200}}}
+{"type":"assistant","timestamp":"2026-07-01T12:00:00Z","requestId":"r1","message":{"id":"m1","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":5,"cache_read_input_tokens":200}}}
+{"type":"assistant","timestamp":"2026-07-02T12:00:00Z","requestId":"r2","message":{"id":"m2","usage":{"input_tokens":300,"output_tokens":70}}}
+EOF
+printf '{"loggedIn":true,"email":"alice@x.com"}\n' > "$pdir/.subscriptions/alice/stub-auth.json"
+
+# fake ccusage on PATH
+mkdir -p "$TESTTMP/bin"
+cat > "$TESTTMP/bin/ccusage" <<'EOF'
+#!/usr/bin/env bash
+printf '{"totals":{"totalTokens":736,"inputTokens":410,"outputTokens":121,"cacheCreationTokens":5,"cacheReadTokens":200,"totalCost":10},"daily":[{"date":"2026-07-02","totalTokens":736}]}\n'
+EOF
+chmod 755 "$TESTTMP/bin/ccusage"
+
+PATH="$TESTTMP/bin:$PATH" "$usage_tool" daily --json >"$TESTTMP/usage.json" 2>"$TESTTMP/errout"
+
+usage_field() { node -e '
+const rows = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const row = rows.find(r => r.profile === process.argv[2] && (r.sub ?? "") === (process.argv[3] ?? ""));
+process.stdout.write(row ? String(row[process.argv[4]]) : "MISSING");
+' "$TESTTMP/usage.json" "$@"; }
+
+check_eq "usage: alice tokens (dedup applied)" "355" "$(usage_field personal alice totalTokens)"
+check_eq "usage: bob tokens" "370" "$(usage_field personal bob totalTokens)"
+check_eq "usage: pre-subscriptions bucket" "11" "$(usage_field personal '(pre-subscriptions)' totalTokens)"
+check_eq "usage: alice status active" "active" "$(usage_field personal alice status)"
+check_eq "usage: bob status stored" "stored" "$(usage_field personal bob status)"
+check_eq "usage: cost apportioned to bob" "5.03" "$(node -e '
+const rows = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const row = rows.find(r => r.profile === "personal" && r.sub === "bob");
+process.stdout.write(row ? row.totalCost.toFixed(2) : "MISSING");
+' "$TESTTMP/usage.json")"
+
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit "$((fails > 0))"

@@ -9,7 +9,7 @@ usage() {
 claude-profile-usage - local Claude Code usage by logged-in claude-profile profiles
 
 Usage:
-  claude-profile-usage [period] [ccusage args...]
+  claude-profile-usage [period] [--json] [ccusage args...]
 
 Periods:
   daily      Summarize daily local usage totals per profile (default)
@@ -23,7 +23,12 @@ Examples:
 
 Notes:
   - This reports local Claude Code usage logs, not live subscription quota.
-  - Only profiles where `claude auth status --json` reports loggedIn=true are included.
+  - Only profiles where `claude auth status --json` reports loggedIn=true are
+    included; profiles with subscriptions are always included, one row per
+    subscription (tokens attributed by the switch journal) plus a total row.
+  - Simultaneous sessions on different subscriptions of one profile blur
+    attribution within the overlap.
+  - --json prints machine-readable rows instead of a table.
   - It does not read or print OAuth tokens.
 EOF
 }
@@ -98,6 +103,110 @@ json_string_array() {
   node -e 'console.log(JSON.stringify(process.argv.slice(1)))' "$@"
 }
 
+list_slots() {
+  local root="$1/.subscriptions"
+  [[ -d "$root" ]] || return 0
+  find "$root" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | LC_ALL=C sort
+}
+
+active_slot() {
+  local f="$1/.subscriptions/active" name
+  [[ -f "$f" ]] || return 0
+  name="$(cat "$f")"
+  [[ -n "$name" && -d "$1/.subscriptions/$name" ]] || return 0
+  printf '%s\n' "$name"
+}
+
+since_to_iso() {
+  # ccusage --since takes YYYYMMDD; normalize to ISO for message filtering
+  local s="$1"
+  if [[ "$s" =~ ^[0-9]{8}$ ]]; then
+    printf '%s-%s-%sT00:00:00Z\n' "${s:0:4}" "${s:4:2}" "${s:6:2}"
+  elif [[ "$s" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    printf '%sT00:00:00Z\n' "$s"
+  else
+    printf '%s\n' "$s"
+  fi
+}
+
+sub_token_rows() {
+  local profile_dir="$1" since_iso="${2:-}"
+  node - "$profile_dir/.subscriptions/switch-log.jsonl" "$profile_dir/projects" "$since_iso" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const [journalPath, projectsDir, since] = process.argv.slice(2);
+
+let events = [];
+try {
+  events = fs.readFileSync(journalPath, "utf8")
+    .split("\n").filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(e => e && e.ts && e.sub)
+    .sort((a, b) => (a.ts < b.ts ? -1 : 1));
+} catch {}
+
+function subAt(ts) {
+  let sub = "(pre-subscriptions)";
+  for (const e of events) {
+    if (e.ts <= ts) sub = e.sub;
+    else break;
+  }
+  return sub;
+}
+
+function* jsonlFiles(dir) {
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const ent of entries) {
+    const p = path.join(dir, ent.name);
+    if (ent.isDirectory()) yield* jsonlFiles(p);
+    else if (ent.name.endsWith(".jsonl")) yield p;
+  }
+}
+
+const totals = {};
+const seen = new Set();
+function bucket(sub) {
+  return totals[sub] ??= {
+    sub, inputTokens: 0, outputTokens: 0,
+    cacheCreationTokens: 0, cacheReadTokens: 0,
+    totalTokens: 0, messages: 0
+  };
+}
+
+for (const file of jsonlFiles(projectsDir)) {
+  let lines;
+  try { lines = fs.readFileSync(file, "utf8").split("\n"); } catch { continue; }
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    const usage = entry?.message?.usage;
+    if (!usage || !entry.timestamp) continue;
+    if (since && entry.timestamp < since) continue;
+    const key = entry.message.id && entry.requestId
+      ? `${entry.message.id}:${entry.requestId}` : null;
+    if (key) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    const b = bucket(subAt(entry.timestamp));
+    const inp = usage.input_tokens ?? 0;
+    const out = usage.output_tokens ?? 0;
+    const cc = usage.cache_creation_input_tokens ?? 0;
+    const cr = usage.cache_read_input_tokens ?? 0;
+    b.inputTokens += inp;
+    b.outputTokens += out;
+    b.cacheCreationTokens += cc;
+    b.cacheReadTokens += cr;
+    b.totalTokens += inp + out + cc + cr;
+    b.messages += 1;
+  }
+}
+console.log(JSON.stringify(Object.values(totals).sort((a, b) => a.sub.localeCompare(b.sub))));
+NODE
+}
+
 main() {
   local period="${1:-daily}"
 
@@ -116,6 +225,12 @@ main() {
       ;;
   esac
 
+  local as_json=0
+  if [[ "${1:-}" == "--json" ]]; then
+    as_json=1
+    shift || true
+  fi
+
   local claude_bin
   claude_bin="$(find_claude_bin)" || {
     err "claude binary not found in PATH"
@@ -128,14 +243,29 @@ main() {
   printf '[]' > "$rows_file"
 
   local profile_dir profile status ccusage_json args_json
+  local slots sub_rows active since_iso prev a
   args_json="$(json_string_array "$@")"
 
   while IFS= read -r profile_dir; do
     [[ -n "$profile_dir" ]] || continue
     profile="$(profile_name_from_path "$profile_dir")"
 
-    if ! profile_logged_in "$profile_dir" "$claude_bin"; then
+    slots="$(list_slots "$profile_dir")"
+    if [[ -z "$slots" ]] && ! profile_logged_in "$profile_dir" "$claude_bin"; then
       continue
+    fi
+
+    sub_rows='[]'
+    active=""
+    since_iso=""
+    if [[ -n "$slots" ]]; then
+      active="$(active_slot "$profile_dir")"
+      prev=""
+      for a in "$@"; do
+        [[ "$prev" == "--since" ]] && since_iso="$(since_to_iso "$a")"
+        prev="$a"
+      done
+      sub_rows="$(sub_token_rows "$profile_dir" "$since_iso")"
     fi
 
     if ccusage_json="$(run_ccusage_json "$profile_dir" "$period" "$@" 2>/dev/null)"; then
@@ -145,7 +275,8 @@ main() {
       ccusage_json='{}'
     fi
 
-    CCUSAGE_JSON="$ccusage_json" node - "$rows_file" "$profile" "$profile_dir" "$period" "$status" "$args_json" <<'NODE'
+    CCUSAGE_JSON="$ccusage_json" SUB_ROWS_JSON="$sub_rows" ACTIVE_SUB="$active" SLOT_NAMES="$slots" \
+      node - "$rows_file" "$profile" "$profile_dir" "$period" "$status" "$args_json" <<'NODE'
 const fs = require("fs");
 
 const [rowsPath, profile, profileDir, period, status, argsJson] = process.argv.slice(2);
@@ -182,16 +313,52 @@ const row = {
 };
 
 const rows = JSON.parse(fs.readFileSync(rowsPath, "utf8"));
+
+const subRows = JSON.parse(process.env.SUB_ROWS_JSON || "[]");
+const activeSub = process.env.ACTIVE_SUB || "";
+const slotNames = (process.env.SLOT_NAMES || "").split("\n").filter(Boolean);
+if (slotNames.length > 0) {
+  const grand = subRows.reduce((n, r) => n + r.totalTokens, 0) || 1;
+  const known = new Set(subRows.map(r => r.sub));
+  for (const name of slotNames) {
+    if (!known.has(name)) subRows.push({
+      sub: name, inputTokens: 0, outputTokens: 0,
+      cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, messages: 0
+    });
+  }
+  for (const r of subRows.sort((a, b) => a.sub.localeCompare(b.sub))) {
+    rows.push({
+      profile, sub: r.sub,
+      status: r.sub === activeSub ? "active" : (slotNames.includes(r.sub) ? "stored" : "history"),
+      periods: row.periods,
+      totalTokens: r.totalTokens,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      cacheCreationTokens: r.cacheCreationTokens,
+      cacheReadTokens: r.cacheReadTokens,
+      totalCost: row.totalCost * (r.totalTokens / grand),
+      latestPeriod: row.latestPeriod,
+      latestTokens: row.latestTokens,
+      args
+    });
+  }
+}
+
 rows.push(row);
 fs.writeFileSync(rowsPath, JSON.stringify(rows));
 NODE
   done < <(find_profiles)
 
-  node - "$rows_file" "$period" <<'NODE'
+  node - "$rows_file" "$period" "$as_json" <<'NODE'
 const fs = require("fs");
 
-const [rowsPath, period] = process.argv.slice(2);
+const [rowsPath, period, asJsonFlag] = process.argv.slice(2);
 const rows = JSON.parse(fs.readFileSync(rowsPath, "utf8"));
+
+if (asJsonFlag === "1") {
+  console.log(JSON.stringify(rows));
+  process.exit(0);
+}
 
 function fmtInt(value) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
@@ -211,7 +378,7 @@ if (rows.length === 0) {
 }
 
 const table = rows.map(row => ({
-  Profile: row.profile,
+  Profile: row.sub ? `${row.profile}/${row.sub}` : row.profile,
   Status: row.status,
   [`${period} periods`]: row.periods,
   "Total tokens": fmtInt(row.totalTokens),
