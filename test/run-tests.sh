@@ -238,5 +238,30 @@ check "purge adopted: refused" check_status 2
 check "purge adopted: message" file_contains "$TESTTMP/errout" "refusing --purge"
 unset CLAUDE_PROFILE_SECURITY_BIN FAKE_SECURITY_LOG
 
+# --- doctor + support detection ---
+new_env
+run_wrapper --add-sub personal alice
+run_wrapper --doctor
+check "doctor: supported line" file_contains "$TESTTMP/out" "securestorage env: supported"
+check "doctor: profile sub count" file_contains "$TESTTMP/out" "profile personal: 1 subscription(s), active: alice"
+
+# unsupported stub → launch warning + doctor line
+cat > "$TESTTMP/stub-unsupported" <<'EOF'
+#!/usr/bin/env bash
+{ printf 'argv=%s\n' "$*"; } > "${STUB_RECORD_FILE:?}"
+EOF
+chmod 755 "$TESTTMP/stub-unsupported"
+export CLAUDE_PROFILE_CLAUDE_BIN="$TESTTMP/stub-unsupported"
+run_wrapper personal
+check "unsupported: launch warns" file_contains "$TESTTMP/errout" "does not support CLAUDE_SECURESTORAGE_CONFIG_DIR"
+run_wrapper --doctor
+check "unsupported: doctor reports" file_contains "$TESTTMP/out" "securestorage env: NOT supported"
+
+# help text
+export CLAUDE_PROFILE_CLAUDE_BIN="$here/stub-claude"
+run_wrapper --help
+check "help: --add-sub documented" file_contains "$TESTTMP/out" "add-sub"
+check "help: --switch documented" file_contains "$TESTTMP/out" "switch"
+
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit "$((fails > 0))"

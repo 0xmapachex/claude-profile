@@ -33,6 +33,10 @@ Usage:
   claude-profile --init <profile>
   claude-profile --path <profile>
   claude-profile --sync-settings <profile>
+  claude-profile --add-sub <profile> <name>
+  claude-profile --switch <profile> [name]
+  claude-profile --subs <profile>
+  claude-profile --remove-sub <profile> <name> [--purge]
   claude-profile --remove <profile>
   claude-profile --trash-list
   claude-profile --list
@@ -57,6 +61,11 @@ badge inside Claude Code by running /color at startup on bare launches, and a
 launch shortcut named claude-<profile> in ~/.local/bin, so after the first
 run you can start a profile with e.g. `claude-work`. Disable with
 CLAUDE_PROFILE_SET_CLAUDE_COLOR=0 / CLAUDE_PROFILE_SHORTCUTS=0.
+
+A profile can hold multiple login subscriptions. --add-sub creates one and
+launches claude for /login; --switch changes which one the next launch uses
+(no argument rotates). History, MCPs, and --resume are shared across a
+profile's subscriptions; each subscription keeps its own credentials.
 
 For account separation, auth/provider environment variables are always removed
 before Claude starts, so ANTHROPIC_API_KEY and similar variables cannot override
@@ -203,6 +212,10 @@ ensure_profile_color() {
 supports_session_color() {
   # the /color command ships in claude builds containing its confirmation string
   grep -aqs -- 'Session color set to' "$1"
+}
+
+supports_securestorage_env() {
+  grep -aqs -- 'CLAUDE_SECURESTORAGE_CONFIG_DIR' "$1"
 }
 
 shortcut_path() {
@@ -743,6 +756,9 @@ launch_profile() {
   if [[ -n "$active" ]]; then
     export CLAUDE_SECURESTORAGE_CONFIG_DIR="$(slot_storage_dir "$profile_dir" "$active")"
     journal_append "$profile_dir" launch "$active"
+    if ! supports_securestorage_env "$claude_bin"; then
+      err "warning: installed claude does not support CLAUDE_SECURESTORAGE_CONFIG_DIR; subscriptions are inert for this launch"
+    fi
   fi
 
   set_terminal_title "$profile" "$active"
@@ -796,6 +812,11 @@ doctor() {
     else
       printf 'session color: not supported (colors disabled)\n'
     fi
+    if supports_securestorage_env "$claude_bin"; then
+      printf 'securestorage env: supported (per-subscription credentials active)\n'
+    else
+      printf 'securestorage env: NOT supported by installed claude; subscriptions are inert\n'
+    fi
   else
     printf 'claude binary: not found\n'
   fi
@@ -813,6 +834,19 @@ doctor() {
   else
     printf 'auth env in current shell: none detected\n'
   fi
+
+  local p pd count active
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    pd="$(profile_path "$p")"
+    count="$(list_slots "$pd" | grep -c . || true)"
+    if (( count > 0 )); then
+      active="$(resolve_active_slot "$pd")"
+      printf 'profile %s: %s subscription(s), active: %s\n' "$p" "$count" "${active:--}"
+    fi
+  done <<EOF
+$(list_profiles)
+EOF
 }
 
 main() {
