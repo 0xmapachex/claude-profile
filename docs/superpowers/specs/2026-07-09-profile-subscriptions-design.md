@@ -144,7 +144,7 @@ Consequences:
    lexicographically first slot, heal `active`.
 4. No slots: exactly today's behavior.
 
-### Add — `claude-profile <profile> --add-sub <name>`
+### Add — `claude-profile --add-sub <profile> <name>`
 
 1. Validate name (same charset as profile names); refuse duplicates.
 2. If this is the first slot and the profile already has a live login
@@ -158,7 +158,7 @@ Consequences:
    Post-login, the next `--subs` invocation backfills the email in
    `meta.json` from `claude auth status --json`.
 
-### Switch — `claude-profile <profile> --switch [name]`
+### Switch — `claude-profile --switch <profile> [name]`
 
 1. Resolve target: given name, else next slot in sorted rotation after the
    current active. Error if fewer than 2 slots exist.
@@ -166,7 +166,7 @@ Consequences:
 3. Print `switched <profile>: <old> → <new>`. That's the whole operation —
    no credential I/O, safe at any time, even with sessions running.
 
-### List / remove — `--subs`, `--remove-sub <name>`
+### List / remove — `--subs <profile>`, `--remove-sub <profile> <name> [--purge]`
 
 - `--subs`: one line per slot — name, email (backfilled via
   `claude auth status` against the slot's storage dir, read-only), `*` on
