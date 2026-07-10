@@ -268,6 +268,120 @@ link_shared_item() {
   ln -s "$src" "$dst"
 }
 
+subs_root() { printf '%s/.subscriptions\n' "$1"; }
+slot_path() { printf '%s/.subscriptions/%s\n' "$1" "$2"; }
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+validate_sub_name() {
+  local sub="$1"
+  if [[ -z "$sub" ]]; then
+    err "subscription name is required"
+    return 2
+  fi
+  if [[ ! "$sub" =~ ^[a-z0-9][a-z0-9._-]{0,79}$ ]]; then
+    err "invalid subscription name: $sub"
+    err "use 1-80 chars: lowercase letters, numbers, dot, underscore, dash; start with letter/number"
+    return 2
+  fi
+}
+
+list_slots() {
+  local root
+  root="$(subs_root "$1")"
+  [[ -d "$root" ]] || return 0
+  find "$root" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | LC_ALL=C sort
+}
+
+resolve_active_slot() {
+  local profile_dir="$1" active_file name
+  active_file="$(subs_root "$profile_dir")/active"
+  [[ -f "$active_file" && ! -L "$active_file" ]] || return 0
+  name="$(cat "$active_file")"
+  [[ -n "$name" && -d "$(slot_path "$profile_dir" "$name")" ]] || return 0
+  printf '%s\n' "$name"
+}
+
+set_active_slot() {
+  printf '%s\n' "$2" > "$(subs_root "$1")/active"
+}
+
+journal_append() {
+  local profile_dir="$1" event="$2" sub="$3" from="${4:-}"
+  local from_json="null"
+  [[ -z "$from" ]] || from_json="\"$from\""
+  printf '{"ts":"%s","event":"%s","sub":"%s","from":%s}\n' \
+    "$(now_iso)" "$event" "$sub" "$from_json" \
+    >> "$(subs_root "$profile_dir")/switch-log.jsonl" \
+    || err "warning: journal write failed; usage attribution will have a gap"
+}
+
+write_slot_meta() {
+  local slot_dir="$1" name="$2" storage_dir="$3" email="${4:-}"
+  local node_bin
+  node_bin="$(command -v node || true)"
+  if [[ -z "$node_bin" ]]; then
+    err "node is required to manage subscriptions"
+    return 1
+  fi
+  "$node_bin" -e '
+const fs = require("fs");
+const [dst, name, storageDir, email, now] = process.argv.slice(1);
+let meta = {};
+try { meta = JSON.parse(fs.readFileSync(dst, "utf8")); } catch {}
+meta.name = name;
+meta.storageDir = storageDir;
+if (email) meta.email = email;
+if (!meta.createdAt) meta.createdAt = now;
+meta.lastUsedAt = now;
+fs.writeFileSync(dst, JSON.stringify(meta, null, 2) + "\n", { mode: 0o600 });
+' "$slot_dir/meta.json" "$name" "$storage_dir" "$email" "$(now_iso)"
+}
+
+slot_storage_dir() {
+  local profile_dir="$1" sub="$2" slot out=""
+  slot="$(slot_path "$profile_dir" "$sub")"
+  if [[ -f "$slot/meta.json" ]]; then
+    out="$(node -e '
+try {
+  const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  if (typeof m.storageDir === "string" && m.storageDir) process.stdout.write(m.storageDir);
+} catch {}
+' "$slot/meta.json" 2>/dev/null || true)"
+  fi
+  printf '%s\n' "${out:-$slot}"
+}
+
+add_sub() {
+  local profile="$1" sub="$2"
+  validate_profile "$profile" || return $?
+  validate_sub_name "$sub" || return $?
+
+  local profile_dir
+  profile_dir="$(init_profile "$profile")" || return $?
+
+  umask 077
+  mkdir -p "$(subs_root "$profile_dir")"
+  chmod 700 "$(subs_root "$profile_dir")" 2>/dev/null || true
+
+  local slot
+  slot="$(slot_path "$profile_dir" "$sub")"
+  if [[ -d "$slot" ]]; then
+    err "subscription already exists: $sub"
+    return 2
+  fi
+
+  local prev
+  prev="$(resolve_active_slot "$profile_dir")"
+
+  mkdir -p "$slot"
+  chmod 700 "$slot"
+  write_slot_meta "$slot" "$sub" "$slot" || return 1
+  set_active_slot "$profile_dir" "$sub"
+  journal_append "$profile_dir" switch "$sub" "$prev"
+  printf 'created subscription %s in profile %s\n' "$sub" "$profile" >&2
+  printf 'launching claude; run /login inside to attach this subscription\n' >&2
+}
+
 init_profile() {
   local profile="$1"
   validate_profile "$profile" || return $?
@@ -348,7 +462,7 @@ strip_auth_env() {
 }
 
 set_terminal_title() {
-  local profile="$1"
+  local profile="$1" sub="${2:-}"
 
   if [[ "${CLAUDE_PROFILE_SET_TERMINAL_TITLE:-1}" == "0" ]]; then
     return 0
@@ -356,10 +470,50 @@ set_terminal_title() {
 
   if [[ -t 1 ]]; then
     local title="${CLAUDE_PROFILE_TITLE_PREFIX:-claude:}$profile"
+    [[ -z "$sub" ]] || title="$title ($sub)"
     title="${title//$'\033'/}"
     title="${title//$'\007'/}"
     printf '\033]0;%s\007' "$title"
   fi
+}
+
+launch_profile() {
+  local profile="$1"
+  shift
+
+  local profile_dir
+  profile_dir="$(init_profile "$profile")" || return $?
+
+  if [[ "${CLAUDE_PROFILE_SYNC_SETTINGS:-1}" != "0" ]]; then
+    write_sanitized_settings "$source_config/settings.json" "$profile_dir/settings.json"
+  fi
+
+  local claude_bin
+  claude_bin="$(find_claude_bin)" || {
+    err "claude binary not found in PATH"
+    return 127
+  }
+
+  strip_auth_env
+  unset CLAUDE_SECURESTORAGE_CONFIG_DIR 2>/dev/null || true
+  export CLAUDE_CONFIG_DIR="$profile_dir"
+
+  local active=""
+  active="$(resolve_active_slot "$profile_dir")"
+  if [[ -n "$active" ]]; then
+    export CLAUDE_SECURESTORAGE_CONFIG_DIR="$(slot_storage_dir "$profile_dir" "$active")"
+    journal_append "$profile_dir" launch "$active"
+  fi
+
+  set_terminal_title "$profile" "$active"
+
+  if should_inject_color "$claude_bin" "$@"; then
+    set -- "/color $(ensure_profile_color "$profile_dir")" "$@"
+  fi
+
+  set -- "$@" --dangerously-skip-permissions
+
+  exec "$claude_bin" "$@"
 }
 
 should_inject_color() {
@@ -466,6 +620,16 @@ main() {
       remove_profile "${1:-}"
       return 0
       ;;
+    --add-sub|add-sub)
+      shift || true
+      if [[ $# -lt 2 ]]; then
+        err "usage: claude-profile --add-sub <profile> <name>"
+        return 2
+      fi
+      add_sub "$1" "$2" || return $?
+      launch_profile "$1"
+      return $?
+      ;;
     "")
       usage >&2
       return 2
@@ -484,30 +648,7 @@ main() {
     shift
   fi
 
-  local profile_dir
-  profile_dir="$(init_profile "$profile")" || return $?
-
-  if [[ "${CLAUDE_PROFILE_SYNC_SETTINGS:-1}" != "0" ]]; then
-    write_sanitized_settings "$source_config/settings.json" "$profile_dir/settings.json"
-  fi
-
-  local claude_bin
-  claude_bin="$(find_claude_bin)" || {
-    err "claude binary not found in PATH"
-    return 127
-  }
-
-  strip_auth_env
-  export CLAUDE_CONFIG_DIR="$profile_dir"
-  set_terminal_title "$profile"
-
-  if should_inject_color "$claude_bin" "$@"; then
-    set -- "/color $(ensure_profile_color "$profile_dir")" "$@"
-  fi
-
-  set -- "$@" --dangerously-skip-permissions
-
-  exec "$claude_bin" "$@"
+  launch_profile "$profile" "$@"
 }
 
 main "$@"

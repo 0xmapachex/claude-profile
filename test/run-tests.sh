@@ -60,5 +60,39 @@ check "smoke: config dir is profile dir" file_contains "$STUB_RECORD_FILE" "CLAU
 check "smoke: securestorage env untouched without subs" file_contains "$STUB_RECORD_FILE" "CLAUDE_SECURESTORAGE_CONFIG_DIR=__unset__"
 check "smoke: skip-permissions flag passed" file_contains "$STUB_RECORD_FILE" "argv=--dangerously-skip-permissions"
 
+# --- test: --add-sub creates slot, meta, active, journal; launch exports env ---
+new_env
+run_wrapper --add-sub personal alice
+check "add-sub: exit 0" check_status 0
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+check "add-sub: slot dir created" test -d "$pdir/.subscriptions/alice"
+check "add-sub: active file names slot" file_contains "$pdir/.subscriptions/active" "alice"
+check "add-sub: meta storageDir is slot dir" file_contains "$pdir/.subscriptions/alice/meta.json" "\"storageDir\": \"$pdir/.subscriptions/alice\""
+check "add-sub: journal has switch event" file_contains "$pdir/.subscriptions/switch-log.jsonl" '"event":"switch","sub":"alice","from":null'
+check "add-sub: launch exported securestorage env" file_contains "$STUB_RECORD_FILE" "CLAUDE_SECURESTORAGE_CONFIG_DIR=$pdir/.subscriptions/alice"
+check "add-sub: journal has launch event" file_contains "$pdir/.subscriptions/switch-log.jsonl" '"event":"launch","sub":"alice"'
+
+# --- test: duplicate --add-sub is refused ---
+run_wrapper --add-sub personal alice
+check "add-sub dup: exit 2" check_status 2
+check "add-sub dup: message" file_contains "$TESTTMP/errout" "subscription already exists: alice"
+
+# --- test: bare launch of profile with subs exports env and journals ---
+: > "$STUB_RECORD_FILE"
+run_wrapper personal
+check "launch with sub: env exported" file_contains "$STUB_RECORD_FILE" "CLAUDE_SECURESTORAGE_CONFIG_DIR=$pdir/.subscriptions/alice"
+
+# --- test: inherited securestorage env never leaks into a sub-less profile ---
+new_env
+export CLAUDE_SECURESTORAGE_CONFIG_DIR="/somewhere/stale"
+run_wrapper personal
+check "sub-less launch: inherited env cleared" file_contains "$STUB_RECORD_FILE" "CLAUDE_SECURESTORAGE_CONFIG_DIR=__unset__"
+unset CLAUDE_SECURESTORAGE_CONFIG_DIR
+
+# --- test: invalid sub name rejected ---
+new_env
+run_wrapper --add-sub personal 'Bad Name'
+check "add-sub invalid name: exit 2" check_status 2
+
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit "$((fails > 0))"
