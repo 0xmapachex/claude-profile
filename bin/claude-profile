@@ -402,6 +402,70 @@ adopt_existing_login() {
   printf 'adopted existing login as subscription %s\n' "$name" >&2
 }
 
+next_slot() {
+  local slots="$1" current="$2" first next=""
+  first="$(printf '%s\n' "$slots" | head -n1)"
+  if [[ -n "$current" ]]; then
+    next="$(printf '%s\n' "$slots" | awk -v c="$current" 'found { print; exit } $0 == c { found = 1 }')"
+  fi
+  printf '%s\n' "${next:-$first}"
+}
+
+switch_sub() {
+  local profile="$1" target="${2:-}"
+  validate_profile "$profile" || return $?
+
+  local profile_dir
+  profile_dir="$(profile_path "$profile")"
+  if [[ ! -d "$profile_dir" ]]; then
+    err "profile does not exist: $profile"
+    return 2
+  fi
+
+  local slots count current
+  slots="$(list_slots "$profile_dir")"
+  count="$(printf '%s' "$slots" | grep -c . || true)"
+  current="$(resolve_active_slot "$profile_dir")"
+
+  if [[ -z "$target" ]]; then
+    if (( count < 2 )); then
+      err "profile $profile has $count subscription(s); add another with: claude-profile --add-sub $profile <name>"
+      return 2
+    fi
+    target="$(next_slot "$slots" "$current")"
+  fi
+
+  validate_sub_name "$target" || return $?
+  if [[ ! -d "$(slot_path "$profile_dir" "$target")" ]]; then
+    err "subscription does not exist: $target (add with: claude-profile --add-sub $profile $target)"
+    return 2
+  fi
+
+  if [[ "$target" == "$current" ]]; then
+    printf '%s already active in %s\n' "$target" "$profile"
+    return 0
+  fi
+
+  set_active_slot "$profile_dir" "$target"
+  write_slot_meta "$(slot_path "$profile_dir" "$target")" "$target" "$(slot_storage_dir "$profile_dir" "$target")" || true
+  journal_append "$profile_dir" switch "$target" "$current"
+  printf 'switched %s: %s → %s\n' "$profile" "${current:-none}" "$target"
+}
+
+heal_active_slot() {
+  local profile_dir="$1" active first
+  active="$(resolve_active_slot "$profile_dir")"
+  if [[ -n "$active" ]]; then
+    printf '%s\n' "$active"
+    return 0
+  fi
+  first="$(list_slots "$profile_dir" | head -n1)"
+  [[ -n "$first" ]] || return 0
+  err "warning: active subscription missing; using $first"
+  set_active_slot "$profile_dir" "$first"
+  printf '%s\n' "$first"
+}
+
 add_sub() {
   local profile="$1" sub="$2"
   validate_profile "$profile" || return $?
@@ -554,7 +618,7 @@ launch_profile() {
   export CLAUDE_CONFIG_DIR="$profile_dir"
 
   local active=""
-  active="$(resolve_active_slot "$profile_dir")"
+  active="$(heal_active_slot "$profile_dir")"
   if [[ -n "$active" ]]; then
     export CLAUDE_SECURESTORAGE_CONFIG_DIR="$(slot_storage_dir "$profile_dir" "$active")"
     journal_append "$profile_dir" launch "$active"
@@ -683,6 +747,15 @@ main() {
       fi
       add_sub "$1" "$2" || return $?
       launch_profile "$1"
+      return $?
+      ;;
+    --switch|switch)
+      shift || true
+      if [[ $# -lt 1 ]]; then
+        err "usage: claude-profile --switch <profile> [name]"
+        return 2
+      fi
+      switch_sub "$1" "${2:-}"
       return $?
       ;;
     "")

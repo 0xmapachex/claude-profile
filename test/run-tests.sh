@@ -121,5 +121,46 @@ pdir="$CLAUDE_PROFILES_ROOT/personal"
 run_wrapper --add-sub personal bob
 check_eq "no adopt when logged out: single slot" "bob" "$(find "$pdir/.subscriptions" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)"
 
+# --- switch tests ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+run_wrapper --add-sub personal alice
+run_wrapper --add-sub personal bob     # active: bob
+
+run_wrapper --switch personal alice
+check "switch by name: exit 0" check_status 0
+check "switch by name: active updated" file_contains "$pdir/.subscriptions/active" "alice"
+check "switch by name: journal" file_contains "$pdir/.subscriptions/switch-log.jsonl" '"event":"switch","sub":"alice","from":"bob"'
+check "switch by name: message" file_contains "$TESTTMP/out" "switched personal: bob"
+
+run_wrapper --switch personal
+check "rotate: exit 0" check_status 0
+check "rotate: wrapped to bob" file_contains "$pdir/.subscriptions/active" "bob"
+
+run_wrapper --switch personal bob
+check "same-target: exit 0" check_status 0
+check "same-target: no-op message" file_contains "$TESTTMP/out" "bob already active"
+
+run_wrapper --switch personal ghost
+check "missing target: exit 2" check_status 2
+check "missing target: hint" file_contains "$TESTTMP/errout" "subscription does not exist: ghost"
+
+new_env
+run_wrapper --add-sub personal only
+run_wrapper --switch personal
+check "single sub rotate: exit 2" check_status 2
+check "single sub rotate: hint names --add-sub" file_contains "$TESTTMP/errout" "--add-sub"
+
+# --- healing: dangling active repaired at launch ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+run_wrapper --add-sub personal alice
+printf 'ghost\n' > "$pdir/.subscriptions/active"
+: > "$STUB_RECORD_FILE"
+run_wrapper personal
+check "heal: active repointed" file_contains "$pdir/.subscriptions/active" "alice"
+check "heal: warned" file_contains "$TESTTMP/errout" "active subscription missing"
+check "heal: launch used healed slot" file_contains "$STUB_RECORD_FILE" "CLAUDE_SECURESTORAGE_CONFIG_DIR=$pdir/.subscriptions/alice"
+
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit "$((fails > 0))"
