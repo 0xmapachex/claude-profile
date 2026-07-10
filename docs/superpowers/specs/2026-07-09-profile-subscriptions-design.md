@@ -203,7 +203,7 @@ Consequences:
 | `--switch` target slot missing | Error naming `--add-sub <name>` |
 | `--switch` with <2 slots | Error explaining `--add-sub` |
 | `active` stale/missing | Warn, heal to first slot (launch) / show no marker (`--subs`) |
-| Slot `meta.json` corrupt | Quarantine slot to `.trash`, prompt `--add-sub` |
+| Slot `meta.json` corrupt/missing | Non-destructive fallback: `storageDir` resolves to the slot dir itself; listings show unknown fields as `-` |
 | Journal append fails | Operation succeeds; warn of attribution gap |
 | `CLAUDE_SECURESTORAGE_CONFIG_DIR` absent from installed CLI | `--doctor` reports it; launch warns once per profile that subscriptions are inert (all slots resolve to the profile's own store) |
 | node missing | Same policy as settings sync today: clear error |
