@@ -31,6 +31,6 @@
     "multi-account"
   ],
   "scripts": {
-    "test": "bash -n bin/claude-profile bin/claude-profile-usage"
+    "test": "bash -n bin/claude-profile bin/claude-profile-usage test/run-tests.sh && bash test/run-tests.sh"
   }
 }
