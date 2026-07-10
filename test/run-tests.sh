@@ -94,5 +94,32 @@ new_env
 run_wrapper --add-sub personal 'Bad Name'
 check "add-sub invalid name: exit 2" check_status 2
 
+# --- test: first --add-sub adopts an existing login ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+mkdir -p "$pdir"
+printf '{"loggedIn":true,"authMethod":"claude.ai","email":"gus.tavo@example.com"}\n' > "$pdir/stub-auth.json"
+run_wrapper --add-sub personal bob
+check "adopt: adopted slot exists" test -d "$pdir/.subscriptions/gus.tavo"
+check "adopt: adopted storageDir is profile dir" file_contains "$pdir/.subscriptions/gus.tavo/meta.json" "\"storageDir\": \"$pdir\""
+check "adopt: adopted email recorded" file_contains "$pdir/.subscriptions/gus.tavo/meta.json" '"email": "gus.tavo@example.com"'
+check "adopt: new slot is active" file_contains "$pdir/.subscriptions/active" "bob"
+check "adopt: journal adopted first" file_contains "$pdir/.subscriptions/switch-log.jsonl" '"event":"switch","sub":"gus.tavo","from":null'
+check "adopt: journal switched to new" file_contains "$pdir/.subscriptions/switch-log.jsonl" '"event":"switch","sub":"bob","from":"gus.tavo"'
+
+# --- test: adoption falls back to sub1 when email is null ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+mkdir -p "$pdir"
+printf '{"loggedIn":true,"authMethod":"claude.ai","email":null}\n' > "$pdir/stub-auth.json"
+run_wrapper --add-sub personal bob
+check "adopt null email: sub1 slot" test -d "$pdir/.subscriptions/sub1"
+
+# --- test: no adoption when logged out ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+run_wrapper --add-sub personal bob
+check_eq "no adopt when logged out: single slot" "bob" "$(find "$pdir/.subscriptions" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)"
+
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit "$((fails > 0))"

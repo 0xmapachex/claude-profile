@@ -351,6 +351,57 @@ try {
   printf '%s\n' "${out:-$slot}"
 }
 
+auth_status_json() {
+  local profile_dir="$1" storage_dir="${2:-}"
+  local claude_bin
+  claude_bin="$(find_claude_bin)" || return 1
+  if [[ -n "$storage_dir" ]]; then
+    CLAUDE_CONFIG_DIR="$profile_dir" CLAUDE_SECURESTORAGE_CONFIG_DIR="$storage_dir" \
+      "$claude_bin" auth status --json 2>/dev/null
+  else
+    env -u CLAUDE_SECURESTORAGE_CONFIG_DIR CLAUDE_CONFIG_DIR="$profile_dir" \
+      "$claude_bin" auth status --json 2>/dev/null
+  fi
+}
+
+json_field() {
+  node -e '
+let raw = "";
+process.stdin.on("data", d => raw += d);
+process.stdin.on("end", () => {
+  try {
+    const v = JSON.parse(raw)[process.argv[1]];
+    if (["string", "number", "boolean"].includes(typeof v)) process.stdout.write(String(v));
+  } catch {}
+});' "$1"
+}
+
+sanitize_sub_name() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -cd 'a-z0-9._-' \
+    | cut -c1-80 \
+    | sed 's/^[._-]*//'
+}
+
+adopt_existing_login() {
+  local profile_dir="$1"
+  local status email name slot
+  status="$(auth_status_json "$profile_dir" "")" || return 0
+  [[ "$(printf '%s' "$status" | json_field loggedIn)" == "true" ]] || return 0
+  email="$(printf '%s' "$status" | json_field email)"
+  name="$(sanitize_sub_name "${email%%@*}")"
+  [[ -n "$name" ]] || name="sub1"
+  slot="$(slot_path "$profile_dir" "$name")"
+  [[ -d "$slot" ]] && return 0
+  mkdir -p "$slot"
+  chmod 700 "$slot"
+  write_slot_meta "$slot" "$name" "$profile_dir" "$email" || return 0
+  set_active_slot "$profile_dir" "$name"
+  journal_append "$profile_dir" switch "$name" ""
+  printf 'adopted existing login as subscription %s\n' "$name" >&2
+}
+
 add_sub() {
   local profile="$1" sub="$2"
   validate_profile "$profile" || return $?
@@ -362,6 +413,10 @@ add_sub() {
   umask 077
   mkdir -p "$(subs_root "$profile_dir")"
   chmod 700 "$(subs_root "$profile_dir")" 2>/dev/null || true
+
+  if [[ -z "$(list_slots "$profile_dir")" ]]; then
+    adopt_existing_login "$profile_dir"
+  fi
 
   local slot
   slot="$(slot_path "$profile_dir" "$sub")"
