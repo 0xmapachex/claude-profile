@@ -107,9 +107,10 @@ resolve_real_bin() {
 }
 
 claude_cli_marker() {
-  # every real claude cli bundle embeds its keychain service name; wrappers
-  # and version-manager shims (mise, asdf, homebrew symlink chains) do not
-  grep -aqs -- 'Claude Code-credentials' "$(resolve_real_bin "$1")"
+  # every real claude cli bundle reads CLAUDE_CONFIG_DIR, so the literal is
+  # embedded in it; wrappers and version-manager shims (mise, asdf, homebrew
+  # symlink chains) do not contain it
+  grep -aqs -- 'CLAUDE_CONFIG_DIR' "$(resolve_real_bin "$1")"
 }
 
 find_claude_bin() {
@@ -244,7 +245,7 @@ securestorage_support_state() {
   real="$(resolve_real_bin "$1")"
   if grep -aqs -- 'CLAUDE_SECURESTORAGE_CONFIG_DIR' "$real"; then
     printf 'supported\n'
-  elif grep -aqs -- 'Claude Code-credentials' "$real"; then
+  elif grep -aqs -- 'CLAUDE_CONFIG_DIR' "$real"; then
     printf 'unsupported\n'
   else
     printf 'unknown\n'
@@ -329,6 +330,12 @@ validate_sub_name() {
     err "use 1-80 chars: lowercase letters, numbers, dot, underscore, dash; start with letter/number"
     return 2
   fi
+  case "$sub" in
+    active|switch-log.jsonl)
+      err "invalid subscription name: $sub is reserved"
+      return 2
+      ;;
+  esac
 }
 
 list_slots() {
@@ -348,7 +355,10 @@ resolve_active_slot() {
 }
 
 set_active_slot() {
-  printf '%s\n' "$2" > "$(subs_root "$1")/active"
+  local active_file
+  active_file="$(subs_root "$1")/active"
+  [[ -L "$active_file" ]] && rm -f "$active_file"
+  printf '%s\n' "$2" > "$active_file"
 }
 
 journal_append() {
@@ -386,14 +396,7 @@ fs.writeFileSync(dst, JSON.stringify(meta, null, 2) + "\n", { mode: 0o600 });
 slot_storage_dir() {
   local profile_dir="$1" sub="$2" slot out=""
   slot="$(slot_path "$profile_dir" "$sub")"
-  if [[ -f "$slot/meta.json" ]]; then
-    out="$(node -e '
-try {
-  const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-  if (typeof m.storageDir === "string" && m.storageDir) process.stdout.write(m.storageDir);
-} catch {}
-' "$slot/meta.json" 2>/dev/null || true)"
-  fi
+  out="$(meta_field "$slot" storageDir)"
   printf '%s\n' "${out:-$slot}"
 }
 
@@ -656,12 +659,23 @@ add_sub() {
     return 2
   fi
 
+  local claude_bin
+  if claude_bin="$(find_claude_bin)" \
+    && [[ "$(securestorage_support_state "$claude_bin")" == "unsupported" ]]; then
+    err "installed claude does not support CLAUDE_SECURESTORAGE_CONFIG_DIR; a second login would overwrite the profile's credentials"
+    err "update claude first, then retry"
+    return 2
+  fi
+
   local prev
   prev="$(resolve_active_slot "$profile_dir")"
 
   mkdir -p "$slot"
   chmod 700 "$slot"
-  write_slot_meta "$slot" "$sub" "$slot" || return 1
+  if ! write_slot_meta "$slot" "$sub" "$slot"; then
+    rmdir "$slot" 2>/dev/null || true
+    return 1
+  fi
   set_active_slot "$profile_dir" "$sub"
   journal_append "$profile_dir" switch "$sub" "$prev"
   printf 'created subscription %s in profile %s\n' "$sub" "$profile" >&2

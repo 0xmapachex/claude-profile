@@ -10,6 +10,9 @@ usage_tool="$repo/bin/claude-profile-usage"
 fails=0
 passes=0
 
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/claude-profile-tests.XXXXXX")"
+trap 'rm -rf "$test_root"' EXIT
+
 check() {
   local desc="$1"; shift
   if "$@"; then
@@ -35,7 +38,7 @@ file_contains() { grep -qF -- "$2" "$1" 2>/dev/null; }
 check_status() { [[ "$(cat "$TESTTMP/status")" == "$1" ]]; }
 
 new_env() {
-  TESTTMP="$(mktemp -d "${TMPDIR:-/tmp}/claude-profile-test.XXXXXX")"
+  TESTTMP="$(mktemp -d "$test_root/case.XXXXXX")"
   export CLAUDE_PROFILES_ROOT="$TESTTMP/profiles"
   export CLAUDE_PROFILE_SOURCE_CONFIG="$TESTTMP/source-config"
   export CLAUDE_PROFILE_CLAUDE_BIN="$here/stub-claude"
@@ -93,6 +96,13 @@ unset CLAUDE_SECURESTORAGE_CONFIG_DIR
 new_env
 run_wrapper --add-sub personal 'Bad Name'
 check "add-sub invalid name: exit 2" check_status 2
+
+# --- test: reserved sub names rejected (collide with control files) ---
+run_wrapper --add-sub personal active
+check "reserved name active: exit 2" check_status 2
+check "reserved name active: message" file_contains "$TESTTMP/errout" "reserved"
+run_wrapper --add-sub personal switch-log.jsonl
+check "reserved name switch-log: exit 2" check_status 2
 
 # --- test: first --add-sub adopts an existing login ---
 new_env
@@ -248,7 +258,7 @@ check "doctor: profile sub count" file_contains "$TESTTMP/out" "profile personal
 # unsupported stub (a REAL cli build without the env var) → launch warning + doctor line
 cat > "$TESTTMP/stub-unsupported" <<'EOF'
 #!/usr/bin/env bash
-# Claude Code-credentials
+# CLAUDE_CONFIG_DIR
 { printf 'argv=%s\n' "$*"; } > "${STUB_RECORD_FILE:?}"
 EOF
 chmod 755 "$TESTTMP/stub-unsupported"
@@ -257,6 +267,12 @@ run_wrapper personal
 check "unsupported: launch warns" file_contains "$TESTTMP/errout" "does not support CLAUDE_SECURESTORAGE_CONFIG_DIR"
 run_wrapper --doctor
 check "unsupported: doctor reports" file_contains "$TESTTMP/out" "securestorage env: NOT supported"
+
+# --add-sub refuses to create subscriptions under an unsupported claude
+run_wrapper --add-sub personal bravo
+check "unsupported add-sub: exit 2" check_status 2
+check "unsupported add-sub: message" file_contains "$TESTTMP/errout" "does not support"
+check "unsupported add-sub: no slot created" test ! -d "$CLAUDE_PROFILES_ROOT/personal/.subscriptions/bravo"
 
 # wrapper/shim stub (neither marker) → NO launch warning, doctor undetermined
 cat > "$TESTTMP/stub-wrapper" <<'EOF'
@@ -305,6 +321,7 @@ cat > "$pdir/projects/proj/session.jsonl" <<'EOF'
 {"type":"assistant","timestamp":"2026-07-01T12:00:00Z","requestId":"r1","message":{"id":"m1","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":5,"cache_read_input_tokens":200}}}
 {"type":"assistant","timestamp":"2026-07-01T12:00:00Z","requestId":"r1","message":{"id":"m1","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":5,"cache_read_input_tokens":200}}}
 {"type":"assistant","timestamp":"2026-07-02T12:00:00Z","requestId":"r2","message":{"id":"m2","usage":{"input_tokens":300,"output_tokens":70}}}
+{"type":"assistant","timestamp":"2026-07-02T00:00:00.500Z","requestId":"r3","message":{"id":"m3","usage":{"input_tokens":7,"output_tokens":0}}}
 EOF
 printf '{"loggedIn":true,"email":"alice@x.com"}\n' > "$pdir/.subscriptions/alice/stub-auth.json"
 
@@ -325,15 +342,46 @@ process.stdout.write(row ? String(row[process.argv[4]]) : "MISSING");
 ' "$TESTTMP/usage.json" "$@"; }
 
 check_eq "usage: alice tokens (dedup applied)" "355" "$(usage_field personal alice totalTokens)"
-check_eq "usage: bob tokens" "370" "$(usage_field personal bob totalTokens)"
+check_eq "usage: bob tokens (switch-second msg included)" "377" "$(usage_field personal bob totalTokens)"
 check_eq "usage: pre-subscriptions bucket" "11" "$(usage_field personal '(pre-subscriptions)' totalTokens)"
 check_eq "usage: alice status active" "active" "$(usage_field personal alice status)"
 check_eq "usage: bob status stored" "stored" "$(usage_field personal bob status)"
-check_eq "usage: cost apportioned to bob" "5.03" "$(node -e '
+check_eq "usage: cost apportioned to bob" "5.07" "$(node -e '
 const rows = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 const row = rows.find(r => r.profile === "personal" && r.sub === "bob");
 process.stdout.write(row ? row.totalCost.toFixed(2) : "MISSING");
 ' "$TESTTMP/usage.json")"
+
+# --json accepted with the period omitted
+PATH="$TESTTMP/bin:$PATH" "$usage_tool" --json >"$TESTTMP/usage-nop.json" 2>/dev/null
+check "usage: --json without period works" node -e '
+const rows = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+process.exit(Array.isArray(rows) && rows.length > 0 ? 0 : 1);
+' "$TESTTMP/usage-nop.json"
+
+# --since passthrough must not crash and must filter our per-sub token rows
+PATH="$TESTTMP/bin:$PATH" "$usage_tool" daily --json --since 20260702 >"$TESTTMP/usage-since.json" 2>"$TESTTMP/errout"
+check "usage: --since run exits 0" test -s "$TESTTMP/usage-since.json"
+usage_field2() { node -e '
+const rows = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const row = rows.find(r => r.profile === process.argv[2] && (r.sub ?? "") === (process.argv[3] ?? ""));
+process.stdout.write(row ? String(row[process.argv[4]]) : "MISSING");
+' "$TESTTMP/usage-since.json" "$@"; }
+check_eq "usage: --since filters alice to 0" "0" "$(usage_field2 personal alice totalTokens)"
+check_eq "usage: --since keeps bob window" "377" "$(usage_field2 personal bob totalTokens)"
+
+# --- symlinked active file is replaced, not written through ---
+new_env
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+run_wrapper --add-sub personal alice
+run_wrapper --add-sub personal bob
+target="$TESTTMP/evil-target"
+printf 'x\n' > "$target"
+rm -f "$pdir/.subscriptions/active"
+ln -s "$target" "$pdir/.subscriptions/active"
+run_wrapper --switch personal alice
+check "symlink active: target untouched" file_contains "$target" "x"
+check "symlink active: replaced with real file" bash -c "[[ ! -L '$pdir/.subscriptions/active' ]] && grep -qF alice '$pdir/.subscriptions/active'"
 
 printf '\n%d passed, %d failed\n' "$passes" "$fails"
 exit "$((fails > 0))"

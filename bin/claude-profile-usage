@@ -66,7 +66,7 @@ profile_logged_in() {
   local claude_bin="$2"
   local status_json
 
-  if ! status_json="$(CLAUDE_CONFIG_DIR="$profile_dir" "$claude_bin" auth status --json 2>/dev/null)"; then
+  if ! status_json="$(env -u CLAUDE_SECURESTORAGE_CONFIG_DIR CLAUDE_CONFIG_DIR="$profile_dir" "$claude_bin" auth status --json 2>/dev/null)"; then
     return 1
   fi
 
@@ -100,7 +100,8 @@ run_ccusage_json() {
 }
 
 json_string_array() {
-  node -e 'console.log(JSON.stringify(process.argv.slice(1)))' "$@"
+  # the -- keeps node from parsing dash-prefixed ccusage args as its own options
+  node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- "$@"
 }
 
 list_slots() {
@@ -130,11 +131,15 @@ since_to_iso() {
 }
 
 sub_token_rows() {
-  local profile_dir="$1" since_iso="${2:-}"
-  node - "$profile_dir/.subscriptions/switch-log.jsonl" "$profile_dir/projects" "$since_iso" <<'NODE'
+  local profile_dir="$1" since_iso="${2:-}" until_iso="${3:-}"
+  node - "$profile_dir/.subscriptions/switch-log.jsonl" "$profile_dir/projects" "$since_iso" "$until_iso" <<'NODE'
 const fs = require("fs");
 const path = require("path");
-const [journalPath, projectsDir, since] = process.argv.slice(2);
+const [journalPath, projectsDir, since, until] = process.argv.slice(2);
+
+const sinceMs = since ? Date.parse(since) : -Infinity;
+// until names an inclusive day; the bound is the start of the next day
+const untilMs = until ? Date.parse(until) + 86400000 : Infinity;
 
 let events = [];
 try {
@@ -142,16 +147,18 @@ try {
     .split("\n").filter(Boolean)
     .map(l => { try { return JSON.parse(l); } catch { return null; } })
     .filter(e => e && e.ts && e.sub)
-    .sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    .map(e => ({ sub: e.sub, tsMs: Date.parse(e.ts) }))
+    .filter(e => Number.isFinite(e.tsMs))
+    .sort((a, b) => a.tsMs - b.tsMs);
 } catch {}
 
-function subAt(ts) {
-  let sub = "(pre-subscriptions)";
-  for (const e of events) {
-    if (e.ts <= ts) sub = e.sub;
-    else break;
+function subAt(ms) {
+  let lo = 0, hi = events.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (events[mid].tsMs <= ms) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
   }
-  return sub;
+  return ans >= 0 ? events[ans].sub : "(pre-subscriptions)";
 }
 
 function* jsonlFiles(dir) {
@@ -183,14 +190,15 @@ for (const file of jsonlFiles(projectsDir)) {
     try { entry = JSON.parse(line); } catch { continue; }
     const usage = entry?.message?.usage;
     if (!usage || !entry.timestamp) continue;
-    if (since && entry.timestamp < since) continue;
+    const ms = Date.parse(entry.timestamp);
+    if (!Number.isFinite(ms) || ms < sinceMs || ms >= untilMs) continue;
     const key = entry.message.id && entry.requestId
       ? `${entry.message.id}:${entry.requestId}` : null;
     if (key) {
       if (seen.has(key)) continue;
       seen.add(key);
     }
-    const b = bucket(subAt(entry.timestamp));
+    const b = bucket(subAt(ms));
     const inp = usage.input_tokens ?? 0;
     const out = usage.output_tokens ?? 0;
     const cc = usage.cache_creation_input_tokens ?? 0;
@@ -208,6 +216,12 @@ NODE
 }
 
 main() {
+  local as_json=0
+  if [[ "${1:-}" == "--json" ]]; then
+    as_json=1
+    shift || true
+  fi
+
   local period="${1:-daily}"
 
   case "$period" in
@@ -225,7 +239,6 @@ main() {
       ;;
   esac
 
-  local as_json=0
   if [[ "${1:-}" == "--json" ]]; then
     as_json=1
     shift || true
@@ -243,8 +256,18 @@ main() {
   printf '[]' > "$rows_file"
 
   local profile_dir profile status ccusage_json args_json
-  local slots sub_rows active since_iso prev a
+  local slots sub_rows active since_iso="" until_iso="" prev="" a
   args_json="$(json_string_array "$@")"
+
+  for a in "$@"; do
+    case "$a" in
+      --since=*) since_iso="$(since_to_iso "${a#--since=}")" ;;
+      --until=*) until_iso="$(since_to_iso "${a#--until=}")" ;;
+    esac
+    [[ "$prev" == "--since" ]] && since_iso="$(since_to_iso "$a")"
+    [[ "$prev" == "--until" ]] && until_iso="$(since_to_iso "$a")"
+    prev="$a"
+  done
 
   while IFS= read -r profile_dir; do
     [[ -n "$profile_dir" ]] || continue
@@ -257,15 +280,9 @@ main() {
 
     sub_rows='[]'
     active=""
-    since_iso=""
     if [[ -n "$slots" ]]; then
       active="$(active_slot "$profile_dir")"
-      prev=""
-      for a in "$@"; do
-        [[ "$prev" == "--since" ]] && since_iso="$(since_to_iso "$a")"
-        prev="$a"
-      done
-      sub_rows="$(sub_token_rows "$profile_dir" "$since_iso")"
+      sub_rows="$(sub_token_rows "$profile_dir" "$since_iso" "$until_iso")"
     fi
 
     if ccusage_json="$(run_ccusage_json "$profile_dir" "$period" "$@" 2>/dev/null)"; then
