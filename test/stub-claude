@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # stub claude for tests. The literal name CLAUDE_SECURESTORAGE_CONFIG_DIR below
-# also serves as the wrapper's support-detection marker.
+# serves as the wrapper's support-detection marker, and the next line as the
+# real-cli marker: Claude Code-credentials
 set -euo pipefail
 
 if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then

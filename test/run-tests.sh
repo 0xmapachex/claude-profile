@@ -245,9 +245,10 @@ run_wrapper --doctor
 check "doctor: supported line" file_contains "$TESTTMP/out" "securestorage env: supported"
 check "doctor: profile sub count" file_contains "$TESTTMP/out" "profile personal: 1 subscription(s), active: alice"
 
-# unsupported stub → launch warning + doctor line
+# unsupported stub (a REAL cli build without the env var) → launch warning + doctor line
 cat > "$TESTTMP/stub-unsupported" <<'EOF'
 #!/usr/bin/env bash
+# Claude Code-credentials
 { printf 'argv=%s\n' "$*"; } > "${STUB_RECORD_FILE:?}"
 EOF
 chmod 755 "$TESTTMP/stub-unsupported"
@@ -256,6 +257,31 @@ run_wrapper personal
 check "unsupported: launch warns" file_contains "$TESTTMP/errout" "does not support CLAUDE_SECURESTORAGE_CONFIG_DIR"
 run_wrapper --doctor
 check "unsupported: doctor reports" file_contains "$TESTTMP/out" "securestorage env: NOT supported"
+
+# wrapper/shim stub (neither marker) → NO launch warning, doctor undetermined
+cat > "$TESTTMP/stub-wrapper" <<'EOF'
+#!/usr/bin/env bash
+{ printf 'argv=%s\n' "$*"; } > "${STUB_RECORD_FILE:?}"
+EOF
+chmod 755 "$TESTTMP/stub-wrapper"
+export CLAUDE_PROFILE_CLAUDE_BIN="$TESTTMP/stub-wrapper"
+run_wrapper personal
+check "wrapper: no false launch warning" bash -c "! grep -qF 'does not support CLAUDE_SECURESTORAGE_CONFIG_DIR' '$TESTTMP/errout'"
+run_wrapper --doctor
+check "wrapper: doctor undetermined" file_contains "$TESTTMP/out" "securestorage env: undetermined"
+
+# PATH scan: find_claude_bin must skip wrappers and pick the real cli further down PATH
+pdir="$CLAUDE_PROFILES_ROOT/personal"
+mkdir -p "$TESTTMP/pathA" "$TESTTMP/pathB"
+cp "$TESTTMP/stub-wrapper" "$TESTTMP/pathA/claude"
+cp "$here/stub-claude" "$TESTTMP/pathB/claude"
+unset CLAUDE_PROFILE_CLAUDE_BIN
+: > "$STUB_RECORD_FILE"
+saved_path="$PATH"
+PATH="$TESTTMP/pathA:$TESTTMP/pathB:$PATH" run_wrapper personal
+PATH="$saved_path"
+check "path scan: launch used real cli, not wrapper" file_contains "$STUB_RECORD_FILE" "CLAUDE_SECURESTORAGE_CONFIG_DIR=$pdir/.subscriptions/alice"
+check "path scan: no false warning" bash -c "! grep -qF 'does not support CLAUDE_SECURESTORAGE_CONFIG_DIR' '$TESTTMP/errout'"
 
 # help text
 export CLAUDE_PROFILE_CLAUDE_BIN="$here/stub-claude"

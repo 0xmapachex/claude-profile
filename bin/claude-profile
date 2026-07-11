@@ -102,13 +102,35 @@ profile_path() {
   printf '%s/%s\n' "$profiles_root" "$profile"
 }
 
+resolve_real_bin() {
+  readlink -f "$1" 2>/dev/null || printf '%s\n' "$1"
+}
+
+claude_cli_marker() {
+  # every real claude cli bundle embeds its keychain service name; wrappers
+  # and version-manager shims (mise, asdf, homebrew symlink chains) do not
+  grep -aqs -- 'Claude Code-credentials' "$(resolve_real_bin "$1")"
+}
+
 find_claude_bin() {
   if [[ -n "${CLAUDE_PROFILE_CLAUDE_BIN:-}" ]]; then
     printf '%s\n' "$CLAUDE_PROFILE_CLAUDE_BIN"
     return 0
   fi
 
-  command -v claude
+  # prefer the first PATH entry that is the real cli, not a wrapper/shim
+  local cand first=""
+  while IFS= read -r cand; do
+    [[ -n "$cand" ]] || continue
+    [[ -n "$first" ]] || first="$cand"
+    if claude_cli_marker "$cand"; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done < <(which -a claude 2>/dev/null)
+
+  [[ -n "$first" ]] || return 1
+  printf '%s\n' "$first"
 }
 
 write_sanitized_settings() {
@@ -214,8 +236,19 @@ supports_session_color() {
   grep -aqs -- 'Session color set to' "$1"
 }
 
-supports_securestorage_env() {
-  grep -aqs -- 'CLAUDE_SECURESTORAGE_CONFIG_DIR' "$1"
+securestorage_support_state() {
+  # supported: cli reads CLAUDE_SECURESTORAGE_CONFIG_DIR
+  # unsupported: a real cli build that predates the env var
+  # unknown: a wrapper/shim we cannot inspect (never warn on these)
+  local real
+  real="$(resolve_real_bin "$1")"
+  if grep -aqs -- 'CLAUDE_SECURESTORAGE_CONFIG_DIR' "$real"; then
+    printf 'supported\n'
+  elif grep -aqs -- 'Claude Code-credentials' "$real"; then
+    printf 'unsupported\n'
+  else
+    printf 'unknown\n'
+  fi
 }
 
 shortcut_path() {
@@ -756,7 +789,7 @@ launch_profile() {
   if [[ -n "$active" ]]; then
     export CLAUDE_SECURESTORAGE_CONFIG_DIR="$(slot_storage_dir "$profile_dir" "$active")"
     journal_append "$profile_dir" launch "$active"
-    if ! supports_securestorage_env "$claude_bin"; then
+    if [[ "$(securestorage_support_state "$claude_bin")" == "unsupported" ]]; then
       err "warning: installed claude does not support CLAUDE_SECURESTORAGE_CONFIG_DIR; subscriptions are inert for this launch"
     fi
   fi
@@ -812,11 +845,17 @@ doctor() {
     else
       printf 'session color: not supported (colors disabled)\n'
     fi
-    if supports_securestorage_env "$claude_bin"; then
-      printf 'securestorage env: supported (per-subscription credentials active)\n'
-    else
-      printf 'securestorage env: NOT supported by installed claude; subscriptions are inert\n'
-    fi
+    case "$(securestorage_support_state "$claude_bin")" in
+      supported)
+        printf 'securestorage env: supported (per-subscription credentials active)\n'
+        ;;
+      unsupported)
+        printf 'securestorage env: NOT supported by installed claude; subscriptions are inert\n'
+        ;;
+      *)
+        printf 'securestorage env: undetermined (claude resolves to a wrapper/shim; assuming supported)\n'
+        ;;
+    esac
   else
     printf 'claude binary: not found\n'
   fi
