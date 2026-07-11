@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# stub claude for tests. The literal names CLAUDE_SECURESTORAGE_CONFIG_DIR and
+# CLAUDE_CONFIG_DIR below double as the wrapper's detection markers (support
+# and real-cli respectively).
+set -euo pipefail
+
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  storage="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+  if [[ -f "$storage/stub-auth.json" ]]; then
+    cat "$storage/stub-auth.json"
+  else
+    printf '{"loggedIn":false,"authMethod":"none"}\n'
+  fi
+  exit 0
+fi
+
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'stub-claude 0.0.0\n'
+  exit 0
+fi
+
+{
+  printf 'argv=%s\n' "$*"
+  printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR:-}"
+  printf 'CLAUDE_SECURESTORAGE_CONFIG_DIR=%s\n' "${CLAUDE_SECURESTORAGE_CONFIG_DIR-__unset__}"
+} > "${STUB_RECORD_FILE:?STUB_RECORD_FILE not set}"

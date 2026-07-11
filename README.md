@@ -129,6 +129,51 @@ To sync a profile's settings without launching it:
 claude-profile --sync-settings work
 ```
 
+## Subscriptions
+
+A profile can hold multiple login subscriptions (accounts). Everything that
+makes the profile feel like "your Claude" — conversation history, `--resume`,
+MCP registrations, project trust — is shared across its subscriptions; only
+the login credentials differ. Use it to keep working through rate limits:
+
+```sh
+claude-profile --add-sub personal alice   # launches claude; /login as alice
+claude-profile --add-sub personal bob     # launches claude; /login as bob
+claude-profile personal                   # runs on bob (active)
+# ... rate limit hit: exit claude ...
+claude-profile --switch personal          # bob → alice
+claude-profile personal --resume          # same conversation, fresh quota
+```
+
+Commands:
+
+```sh
+claude-profile --add-sub <profile> <name>          # create + login a subscription
+claude-profile --switch <profile> [name]           # switch (no name = rotate)
+claude-profile --subs <profile>                    # list subscriptions
+claude-profile --remove-sub <profile> <name> [--purge]
+```
+
+Notes:
+
+- If a profile already has a login when you first run `--add-sub`, that login
+  is adopted automatically as its own subscription — nothing is lost.
+- Switching is instant and safe: it only changes which credential store the
+  *next* launch points at (via Claude Code's `CLAUDE_SECURESTORAGE_CONFIG_DIR`).
+  No tokens are copied, and running sessions are unaffected. `--doctor`
+  verifies the installed claude supports this.
+- Remote MCP servers that use their own OAuth keep tokens per subscription:
+  the first time you use a subscription with such a server, re-auth once via
+  `/mcp`; after that it persists.
+- `--remove-sub` moves the slot to `~/.claude-profiles/.trash`. Add `--purge`
+  to also delete the subscription's Keychain entry (macOS).
+
+`claude-profile-usage` shows one row per subscription (tokens attributed via
+the profile's switch journal, cost apportioned by token share) plus a profile
+total row. Add `--json` after the period for machine-readable output. Running
+two subscriptions of one profile simultaneously blurs attribution within the
+overlap.
+
 ## Safety
 
 Before starting Claude, `claude-profile` removes auth/provider environment

@@ -1,6 +1,6 @@
 {
   "name": "@0xmapache/claude-profile",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Secure local multi-profile launcher for Claude Code.",
   "license": "MIT",
   "repository": {
@@ -31,6 +31,6 @@
     "multi-account"
   ],
   "scripts": {
-    "test": "bash -n bin/claude-profile bin/claude-profile-usage"
+    "test": "bash -n bin/claude-profile bin/claude-profile-usage test/run-tests.sh && bash test/run-tests.sh"
   }
 }
